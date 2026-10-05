@@ -31,7 +31,10 @@ pub enum Source {
 impl Source {
     /// Structured sources are trusted over model output.
     pub fn is_structured(self) -> bool {
-        matches!(self, Source::JsonLd | Source::Microdata | Source::Meta | Source::StoreLayout)
+        matches!(
+            self,
+            Source::JsonLd | Source::Microdata | Source::Meta | Source::StoreLayout
+        )
     }
 }
 
@@ -86,7 +89,9 @@ impl ProductInfo {
 
     fn set_description(&mut self, v: Option<String>) {
         if self.description.is_none() {
-            self.description = v.map(|s| truncate(&clean_text(&s), 500)).filter(|s| !s.is_empty());
+            self.description = v
+                .map(|s| truncate(&clean_text(&s), 500))
+                .filter(|s| !s.is_empty());
         }
     }
 }
@@ -134,21 +139,184 @@ fn sel(s: &str) -> Selector {
     Selector::parse(s).expect("static selector")
 }
 
+/// Proper names for stores whose domain doesn't capitalise nicely.
+const KNOWN_STORES: &[(&str, &str)] = &[
+    ("amazon", "Amazon"),
+    ("rei", "REI"),
+    ("bestbuy", "Best Buy"),
+    ("ikea", "IKEA"),
+    ("lego", "LEGO"),
+    ("kitchenaid", "KitchenAid"),
+    ("ebay", "eBay"),
+    ("homedepot", "The Home Depot"),
+    ("bookshop", "Bookshop.org"),
+    ("barnesandnoble", "Barnes & Noble"),
+    ("macys", "Macy's"),
+    ("hm", "H&M"),
+    ("uniqlo", "UNIQLO"),
+    ("crateandbarrel", "Crate & Barrel"),
+    ("potterybarn", "Pottery Barn"),
+    ("potterybarnkids", "Pottery Barn Kids"),
+    ("williams-sonoma", "Williams Sonoma"),
+    ("lowes", "Lowe's"),
+    ("bhphotovideo", "B&H Photo"),
+    ("jcrew", "J.Crew"),
+    ("llbean", "L.L.Bean"),
+    ("dickssportinggoods", "Dick's Sporting Goods"),
+    ("bedbathandbeyond", "Bed Bath & Beyond"),
+    ("gap", "Gap"),
+    ("oldnavy", "Old Navy"),
+    ("anthropologie", "Anthropologie"),
+    ("urbanoutfitters", "Urban Outfitters"),
+    ("thinkgeek", "ThinkGeek"),
+    ("gamestop", "GameStop"),
+    ("playstation", "PlayStation"),
+    ("nintendo", "Nintendo"),
+    ("johnlewis", "John Lewis"),
+    ("argos", "Argos"),
+    ("asos", "ASOS"),
+    ("zalando", "Zalando"),
+    ("bol", "bol.com"),
+];
+
 /// A friendly store name derived from the host, e.g. `www.target.com` -> `Target`.
 pub fn store_from_url(url: &Url) -> Option<String> {
     let host = url.host_str()?;
     let host = host.trim_start_matches("www.").trim_start_matches("m.");
     let parts: Vec<&str> = host.split('.').collect();
     // Pick the registrable label: second-to-last, or third-to-last for e.g. "co.uk".
-    let label = if parts.len() >= 3 && parts[parts.len() - 2].len() <= 3 && parts[parts.len() - 1].len() == 2 {
+    let label = if parts.len() >= 3
+        && parts[parts.len() - 2].len() <= 3
+        && parts[parts.len() - 1].len() == 2
+    {
         parts[parts.len() - 3]
     } else if parts.len() >= 2 {
         parts[parts.len() - 2]
     } else {
         parts[0]
     };
+    if let Some((_, name)) = KNOWN_STORES.iter().find(|(k, _)| *k == label) {
+        return Some(name.to_string());
+    }
     let mut c = label.chars();
-    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+    c.next()
+        .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+}
+
+/// Guess a product name from the URL slug, for pages we can't read:
+/// `/product/221372/rei-co-op-flash-22-pack` -> "Rei Co Op Flash 22 Pack".
+pub fn title_from_url(url: &Url) -> Option<String> {
+    let best = url
+        .path_segments()?
+        .flat_map(|seg| {
+            let seg = seg
+                .trim_end_matches(".html")
+                .trim_end_matches(".htm")
+                .trim_end_matches(".aspx");
+            seg.split('.').map(str::to_string).collect::<Vec<_>>()
+        })
+        .map(|seg| {
+            url::form_urlencoded::parse(format!("s={seg}").as_bytes())
+                .next()
+                .map(|(_, v)| v.into_owned())
+                .unwrap_or(seg)
+        })
+        .filter(|seg| {
+            let words = seg
+                .split(['-', '_', '+', ' '])
+                .filter(|w| !w.is_empty())
+                .count();
+            let letters = seg.chars().filter(|c| c.is_alphabetic()).count();
+            words >= 2 && letters >= 6
+        })
+        .max_by_key(|seg| seg.chars().filter(|c| c.is_alphabetic()).count())?;
+    let mut raw_words: Vec<&str> = best
+        .split(['-', '_', '+', ' '])
+        .filter(|w| !w.is_empty())
+        .collect();
+    // Drop trailing SKU-like codes ("80275887", "P05536113") but keep short model numbers ("10698").
+    while raw_words.len() > 2 {
+        let w = raw_words[raw_words.len() - 1];
+        let digits = w.chars().filter(|c| c.is_ascii_digit()).count();
+        let is_code = (digits == w.len() && digits >= 7)
+            || (digits >= 5 && digits < w.len() && w.chars().all(|c| c.is_ascii_alphanumeric()));
+        if !is_code {
+            break;
+        }
+        raw_words.pop();
+    }
+    let words: Vec<String> = raw_words
+        .into_iter()
+        .map(|w| {
+            // Keep words that already have capitals (LEGO, iPhone); capitalise the rest.
+            if w.chars().any(|c| c.is_uppercase()) {
+                w.to_string()
+            } else {
+                let mut c = w.chars();
+                c.next()
+                    .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                    .unwrap_or_default()
+            }
+        })
+        .collect();
+    Some(words.join(" "))
+}
+
+/// Recognise anti-bot interstitials ("Robot or human?", captchas, Cloudflare checks) so their
+/// titles aren't mistaken for product names.
+pub fn is_bot_wall(html: &str, final_url: &Url) -> bool {
+    let path = final_url.path().to_ascii_lowercase();
+    if path.contains("/blocked") || path.contains("captcha") || path.contains("/challenge") {
+        return true;
+    }
+    let head: String = html.chars().take(20_000).collect::<String>().to_lowercase();
+    let title = head
+        .split("<title")
+        .nth(1)
+        .and_then(|t| t.split_once('>'))
+        .and_then(|(_, rest)| rest.split("</title>").next())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    const TITLES: &[&str] = &[
+        "robot or human",
+        "robot check",
+        "just a moment",
+        "attention required",
+        "access denied",
+        "are you a robot",
+        "pardon our interruption",
+        "hang tight",
+        "security check",
+        "verify you are human",
+        "please verify",
+    ];
+    TITLES.iter().any(|t| title.contains(t))
+        || title == "amazon.com"
+        || head.contains("/errors/validatecaptcha")
+        || head.contains("cf-challenge")
+        || head.contains("px-captcha")
+}
+
+/// Shopify's CDN serves whatever size the URL asks for; ask for a large one.
+pub fn upgrade_image_url(img: &str) -> String {
+    if let Ok(mut u) = Url::parse(img) {
+        if u.path().contains("/cdn/shop/")
+            || u.host_str().is_some_and(|h| h.ends_with("cdn.shopify.com"))
+        {
+            let pairs: Vec<(String, String)> = u
+                .query_pairs()
+                .filter(|(k, _)| k != "width" && k != "height" && k != "crop")
+                .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                .collect();
+            u.query_pairs_mut()
+                .clear()
+                .extend_pairs(pairs)
+                .append_pair("width", "1000");
+            return u.to_string();
+        }
+    }
+    img.to_string()
 }
 
 pub fn extract(html: &str, page_url: &Url) -> ProductInfo {
@@ -167,13 +335,19 @@ pub fn extract(html: &str, page_url: &Url) -> ProductInfo {
     if let Some(t) = info.title.take() {
         info.title = Some(tidy_title(&t, info.store.as_deref()));
     }
+    if let Some(img) = info.image_url.take() {
+        info.image_url = Some(upgrade_image_url(&img));
+    }
     info
 }
 
 /// Remove store names and SEO noise from page titles: "Amazon.com: Foo : Toys & Games" -> "Foo".
 pub fn tidy_title(title: &str, store: Option<&str>) -> String {
     let mut t = title.trim().to_string();
-    if let Some(rest) = t.strip_prefix("Amazon.com: ").or_else(|| t.strip_prefix("Amazon.com : ")) {
+    if let Some(rest) = t
+        .strip_prefix("Amazon.com: ")
+        .or_else(|| t.strip_prefix("Amazon.com : "))
+    {
         t = rest.to_string();
         if let Some(idx) = t.rfind(" : ") {
             t.truncate(idx);
@@ -212,8 +386,13 @@ fn extract_json_ld(doc: &Html, base: &Url, info: &mut ProductInfo) {
 
 fn type_matches(v: &Value, wanted: &[&str]) -> bool {
     match v.get("@type") {
-        Some(Value::String(t)) => wanted.iter().any(|w| t.eq_ignore_ascii_case(w) || t.ends_with(&format!("/{w}"))),
-        Some(Value::Array(ts)) => ts.iter().any(|t| t.as_str().is_some_and(|t| wanted.iter().any(|w| t.eq_ignore_ascii_case(w)))),
+        Some(Value::String(t)) => wanted
+            .iter()
+            .any(|w| t.eq_ignore_ascii_case(w) || t.ends_with(&format!("/{w}"))),
+        Some(Value::Array(ts)) => ts.iter().any(|t| {
+            t.as_str()
+                .is_some_and(|t| wanted.iter().any(|w| t.eq_ignore_ascii_case(w)))
+        }),
         _ => false,
     }
 }
@@ -223,9 +402,21 @@ fn collect_products<'a>(v: &'a Value, out: &mut Vec<&'a Value>, depth: usize) {
         return;
     }
     match v {
-        Value::Array(items) => items.iter().for_each(|i| collect_products(i, out, depth + 1)),
+        Value::Array(items) => items
+            .iter()
+            .for_each(|i| collect_products(i, out, depth + 1)),
         Value::Object(map) => {
-            if type_matches(v, &["Product", "ProductGroup", "IndividualProduct", "ProductModel", "Book", "Vehicle"]) {
+            if type_matches(
+                v,
+                &[
+                    "Product",
+                    "ProductGroup",
+                    "IndividualProduct",
+                    "ProductModel",
+                    "Book",
+                    "Vehicle",
+                ],
+            ) {
                 out.push(v);
             }
             for key in ["@graph", "mainEntity", "itemListElement", "item"] {
@@ -242,7 +433,11 @@ fn json_str(v: &Value) -> Option<String> {
     match v {
         Value::String(s) => Some(s.clone()),
         Value::Number(n) => Some(n.to_string()),
-        Value::Object(m) => m.get("name").or_else(|| m.get("url")).or_else(|| m.get("@value")).and_then(json_str),
+        Value::Object(m) => m
+            .get("name")
+            .or_else(|| m.get("url"))
+            .or_else(|| m.get("@value"))
+            .and_then(json_str),
         Value::Array(a) => a.first().and_then(json_str),
         _ => None,
     }
@@ -252,7 +447,10 @@ fn json_image(v: &Value) -> Option<String> {
     match v {
         Value::String(s) => Some(s.clone()),
         Value::Array(a) => a.iter().find_map(json_image),
-        Value::Object(m) => m.get("url").or_else(|| m.get("contentUrl")).and_then(json_image),
+        Value::Object(m) => m
+            .get("url")
+            .or_else(|| m.get("contentUrl"))
+            .and_then(json_image),
         _ => None,
     }
 }
@@ -312,7 +510,10 @@ fn offer_price(offers: &Value) -> (Option<i64>, Option<String>) {
                 .or_else(|| {
                     offers
                         .get("priceSpecification")
-                        .and_then(|ps| ps.get("priceCurrency").or_else(|| ps.get(0).and_then(|p| p.get("priceCurrency"))))
+                        .and_then(|ps| {
+                            ps.get("priceCurrency")
+                                .or_else(|| ps.get(0).and_then(|p| p.get("priceCurrency")))
+                        })
                         .and_then(json_str)
                         .and_then(|c| price::normalize_currency(&c))
                 });
@@ -320,11 +521,18 @@ fn offer_price(offers: &Value) -> (Option<i64>, Option<String>) {
             let raw = offers
                 .get("price")
                 .or_else(|| offers.get("lowPrice"))
-                .or_else(|| offers.get("priceSpecification").and_then(|ps| ps.get("price").or_else(|| ps.get(0).and_then(|p| p.get("price")))))
+                .or_else(|| {
+                    offers.get("priceSpecification").and_then(|ps| {
+                        ps.get("price")
+                            .or_else(|| ps.get(0).and_then(|p| p.get("price")))
+                    })
+                })
                 .or_else(|| offers.get("highPrice"));
             let cents = raw.and_then(|r| match r {
                 // A JSON number is always a dot-decimal value.
-                Value::Number(n) => n.as_f64().map(|f| (f * price::minor_units(&cur_code) as f64).round() as i64),
+                Value::Number(n) => n
+                    .as_f64()
+                    .map(|f| (f * price::minor_units(&cur_code) as f64).round() as i64),
                 // schema.org says dot-decimal, but some sites write "1.299,00" anyway.
                 Value::String(s) => s
                     .trim()
@@ -369,10 +577,15 @@ fn extract_microdata(doc: &Html, base: &Url, info: &mut ProductInfo) {
     info.set_title(first(r#"[itemprop="name"]"#), Source::Microdata);
     info.set_image(first(r#"[itemprop="image"]"#), base, Source::Microdata);
     info.set_description(first(r#"[itemprop="description"]"#));
-    let currency = first(r#"[itemprop="priceCurrency"]"#).and_then(|c| price::normalize_currency(&c));
+    let currency =
+        first(r#"[itemprop="priceCurrency"]"#).and_then(|c| price::normalize_currency(&c));
     if let Some(p) = first(r#"[itemprop="price"]"#).or_else(|| first(r#"[itemprop="lowPrice"]"#)) {
         let parsed = price::parse_price(&p, currency.as_deref());
-        info.set_price(parsed.as_ref().map(|p| p.0), currency.or(parsed.map(|p| p.1)), Source::Microdata);
+        info.set_price(
+            parsed.as_ref().map(|p| p.0),
+            currency.or(parsed.map(|p| p.1)),
+            Source::Microdata,
+        );
     }
 }
 
@@ -398,18 +611,42 @@ fn meta(doc: &Html, keys: &[&str]) -> Option<String> {
 fn extract_meta(doc: &Html, base: &Url, info: &mut ProductInfo) {
     info.set_title(meta(doc, &["og:title", "twitter:title"]), Source::Meta);
     info.set_image(
-        meta(doc, &["og:image:secure_url", "og:image", "og:image:url", "twitter:image", "twitter:image:src"]),
+        meta(
+            doc,
+            &[
+                "og:image:secure_url",
+                "og:image",
+                "og:image:url",
+                "twitter:image",
+                "twitter:image:src",
+            ],
+        ),
         base,
         Source::Meta,
     );
-    info.set_description(meta(doc, &["og:description", "twitter:description", "description"]));
+    info.set_description(meta(
+        doc,
+        &["og:description", "twitter:description", "description"],
+    ));
     if info.store.is_none() {
         info.store = meta(doc, &["og:site_name", "application-name"]);
     }
-    let currency = meta(doc, &["product:price:currency", "og:price:currency"]).and_then(|c| price::normalize_currency(&c));
-    if let Some(amount) = meta(doc, &["product:price:amount", "og:price:amount", "product:sale_price:amount"]) {
+    let currency = meta(doc, &["product:price:currency", "og:price:currency"])
+        .and_then(|c| price::normalize_currency(&c));
+    if let Some(amount) = meta(
+        doc,
+        &[
+            "product:price:amount",
+            "og:price:amount",
+            "product:sale_price:amount",
+        ],
+    ) {
         let parsed = price::parse_price(&amount, currency.as_deref());
-        info.set_price(parsed.as_ref().map(|p| p.0), currency.clone().or(parsed.map(|p| p.1)), Source::Meta);
+        info.set_price(
+            parsed.as_ref().map(|p| p.0),
+            currency.clone().or(parsed.map(|p| p.1)),
+            Source::Meta,
+        );
     }
     // Twitter "label1=Price, data1=$19.99" product cards.
     if info.price_cents.is_none() {
@@ -418,7 +655,11 @@ fn extract_meta(doc: &Html, base: &Url, info: &mut ProductInfo) {
             if label.is_some_and(|l| l.to_lowercase().contains("price")) {
                 if let Some(data) = meta(doc, &[&format!("twitter:data{i}")]) {
                     let parsed = price::parse_price(&data, currency.as_deref());
-                    info.set_price(parsed.as_ref().map(|p| p.0), parsed.map(|p| p.1), Source::Meta);
+                    info.set_price(
+                        parsed.as_ref().map(|p| p.0),
+                        parsed.map(|p| p.1),
+                        Source::Meta,
+                    );
                 }
             }
         }
@@ -437,9 +678,15 @@ fn first_text(doc: &Html, selectors: &[&str]) -> Option<String> {
 
 fn extract_store_layouts(doc: &Html, base: &Url, info: &mut ProductInfo) {
     // Amazon (and its many regional domains).
-    info.set_title(first_text(doc, &["#productTitle", "#title"]), Source::StoreLayout);
+    info.set_title(
+        first_text(doc, &["#productTitle", "#title"]),
+        Source::StoreLayout,
+    );
     if info.image_url.is_none() {
-        if let Some(img) = doc.select(&sel("#landingImage, #imgBlkFront, #main-image")).next() {
+        if let Some(img) = doc
+            .select(&sel("#landingImage, #imgBlkFront, #main-image"))
+            .next()
+        {
             // data-a-dynamic-image is a JSON map of url -> [w, h]; pick the largest.
             let dynamic = img
                 .value()
@@ -450,7 +697,11 @@ fn extract_store_layouts(doc: &Html, base: &Url, info: &mut ProductInfo) {
                         .max_by_key(|(_, v)| v.get(0).and_then(Value::as_i64).unwrap_or(0))
                         .map(|(k, _)| k)
                 });
-            let src = img.value().attr("data-old-hires").filter(|s| !s.is_empty()).map(str::to_string)
+            let src = img
+                .value()
+                .attr("data-old-hires")
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
                 .or(dynamic)
                 .or_else(|| img.value().attr("src").map(str::to_string));
             info.set_image(src, base, Source::StoreLayout);
@@ -495,10 +746,18 @@ fn extract_generic(doc: &Html, base: &Url, info: &mut ProductInfo) {
     if info.image_url.is_none() {
         // First image that declares itself reasonably large.
         let big = doc.select(&sel("img[src]")).find(|img| {
-            let w = img.value().attr("width").and_then(|w| w.trim_end_matches("px").parse::<u32>().ok()).unwrap_or(0);
+            let w = img
+                .value()
+                .attr("width")
+                .and_then(|w| w.trim_end_matches("px").parse::<u32>().ok())
+                .unwrap_or(0);
             w >= 200
         });
-        info.set_image(big.and_then(|i| i.value().attr("src").map(str::to_string)), base, Source::Generic);
+        info.set_image(
+            big.and_then(|i| i.value().attr("src").map(str::to_string)),
+            base,
+            Source::Generic,
+        );
     }
 }
 
@@ -515,16 +774,34 @@ pub fn page_digest(html: &str, page_url: &Url, max_chars: usize) -> String {
     }
     out.push_str("\n## Meta tags\n");
     for m in doc.select(&sel("meta[content]")).take(60) {
-        let key = m.value().attr("property").or_else(|| m.value().attr("name")).or_else(|| m.value().attr("itemprop"));
+        let key = m
+            .value()
+            .attr("property")
+            .or_else(|| m.value().attr("name"))
+            .or_else(|| m.value().attr("itemprop"));
         if let (Some(k), Some(c)) = (key, m.value().attr("content")) {
-            if k.starts_with("og:") || k.starts_with("product:") || k.starts_with("twitter:") || k == "description" || k.contains("price") {
+            if k.starts_with("og:")
+                || k.starts_with("product:")
+                || k.starts_with("twitter:")
+                || k == "description"
+                || k.contains("price")
+            {
                 out.push_str(&format!("{k} = {}\n", truncate(&clean_text(c), 300)));
             }
         }
     }
     let ld: Vec<String> = doc
         .select(&sel(r#"script[type="application/ld+json"]"#))
-        .map(|s| truncate(&s.text().collect::<String>().split_whitespace().collect::<Vec<_>>().join(" "), 2500))
+        .map(|s| {
+            truncate(
+                &s.text()
+                    .collect::<String>()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                2500,
+            )
+        })
         .take(4)
         .collect();
     if !ld.is_empty() {
@@ -537,10 +814,18 @@ pub fn page_digest(html: &str, page_url: &Url, max_chars: usize) -> String {
     out.push_str("\n## Candidate images\n");
     let mut seen = std::collections::HashSet::new();
     for img in doc.select(&sel("img")).take(200) {
-        let src = img.value().attr("src").or_else(|| img.value().attr("data-src")).or_else(|| img.value().attr("data-old-hires"));
+        let src = img
+            .value()
+            .attr("src")
+            .or_else(|| img.value().attr("data-src"))
+            .or_else(|| img.value().attr("data-old-hires"));
         if let Some(abs) = src.and_then(|s| absolutize(page_url, s)) {
             let lower = abs.to_lowercase();
-            if lower.contains("sprite") || lower.contains("pixel") || lower.ends_with(".svg") || lower.ends_with(".gif") {
+            if lower.contains("sprite")
+                || lower.contains("pixel")
+                || lower.ends_with(".svg")
+                || lower.ends_with(".gif")
+            {
                 continue;
             }
             if seen.insert(abs.clone()) {
@@ -559,7 +844,9 @@ pub fn page_digest(html: &str, page_url: &Url, max_chars: usize) -> String {
 }
 
 fn visible_text(doc: &Html) -> String {
-    let skip = ["script", "style", "noscript", "svg", "nav", "footer", "header", "iframe", "template"];
+    let skip = [
+        "script", "style", "noscript", "svg", "nav", "footer", "header", "iframe", "template",
+    ];
     let mut out = String::new();
     let root = doc.root_element();
     let mut stack = vec![root];
@@ -606,7 +893,10 @@ mod tests {
         assert_eq!(p.title.as_deref(), Some("Build-a-Bot Robot Kit"));
         assert_eq!(p.price_cents, Some(4999));
         assert_eq!(p.currency.as_deref(), Some("USD"));
-        assert_eq!(p.image_url.as_deref(), Some("https://shop.example.com/img/robot.jpg"));
+        assert_eq!(
+            p.image_url.as_deref(),
+            Some("https://shop.example.com/img/robot.jpg")
+        );
         assert_eq!(p.brand.as_deref(), Some("Botco"));
         assert_eq!(p.price_source, Source::JsonLd);
     }
@@ -643,10 +933,19 @@ mod tests {
           <img id="landingImage" src="https://m.media-amazon.com/small.jpg"
                data-a-dynamic-image='{"https://m.media-amazon.com/small.jpg":[100,100],"https://m.media-amazon.com/big.jpg":[1000,1000]}'>
         </body></html>"#;
-        let p = extract(html, &Url::parse("https://www.amazon.com/dp/B00NHQFA1I").unwrap());
-        assert_eq!(p.title.as_deref(), Some("LEGO Classic Large Creative Brick Box 10698"));
+        let p = extract(
+            html,
+            &Url::parse("https://www.amazon.com/dp/B00NHQFA1I").unwrap(),
+        );
+        assert_eq!(
+            p.title.as_deref(),
+            Some("LEGO Classic Large Creative Brick Box 10698")
+        );
         assert_eq!(p.price_cents, Some(4799));
-        assert_eq!(p.image_url.as_deref(), Some("https://m.media-amazon.com/big.jpg"));
+        assert_eq!(
+            p.image_url.as_deref(),
+            Some("https://m.media-amazon.com/big.jpg")
+        );
         assert_eq!(p.store.as_deref(), Some("Amazon"));
     }
 
@@ -658,7 +957,10 @@ mod tests {
         let p = extract(html, &url());
         assert_eq!(p.title.as_deref(), Some("Trail Shoes"));
         assert_eq!(p.price_cents, Some(12000));
-        assert_eq!(p.image_url.as_deref(), Some("https://shop.example.com/products/shoe.png"));
+        assert_eq!(
+            p.image_url.as_deref(),
+            Some("https://shop.example.com/products/shoe.png")
+        );
     }
 
     #[test]
@@ -669,6 +971,75 @@ mod tests {
         assert_eq!(p.title.as_deref(), Some("Wooden Train Set"));
         assert!(p.price_cents.is_none());
         assert!(!p.is_complete());
+    }
+
+    #[test]
+    fn titles_from_slugs() {
+        let t = |u: &str| title_from_url(&Url::parse(u).unwrap());
+        assert_eq!(
+            t("https://www.rei.com/product/221372/rei-co-op-flash-22-pack").as_deref(),
+            Some("Rei Co Op Flash 22 Pack")
+        );
+        assert_eq!(
+            t("https://www.walmart.com/ip/LEGO-Classic-Large-Creative-Brick-Box-10698/36989404")
+                .as_deref(),
+            Some("LEGO Classic Large Creative Brick Box 10698")
+        );
+        assert_eq!(
+            t("https://www.kitchenaid.com/mixers/p.artisan-series-5-quart-tilt-head-stand-mixer.ksm150psob.html").as_deref(),
+            Some("Artisan Series 5 Quart Tilt Head Stand Mixer")
+        );
+        assert_eq!(t("https://www.amazon.com/dp/B00NHQFA1I"), None);
+        assert_eq!(
+            t("https://www.ikea.com/us/en/p/kallax-shelf-unit-white-80275887/").as_deref(),
+            Some("Kallax Shelf Unit White")
+        );
+        assert_eq!(
+            t("https://www.zara.com/us/en/textured-knit-sweater-p05536113.html").as_deref(),
+            Some("Textured Knit Sweater")
+        );
+    }
+
+    #[test]
+    fn detects_bot_walls() {
+        let u = Url::parse("https://www.walmart.com/ip/1").unwrap();
+        assert!(is_bot_wall(
+            "<html><head><title>Robot or human?</title>",
+            &u
+        ));
+        assert!(is_bot_wall(
+            "<title>Amazon.com</title><form action=\"/errors/validateCaptcha\">",
+            &u
+        ));
+        assert!(is_bot_wall(
+            "",
+            &Url::parse("https://www.walmart.com/blocked?url=x").unwrap()
+        ));
+        assert!(!is_bot_wall("<title>Robot Kit | Toys</title>", &u));
+    }
+
+    #[test]
+    fn shopify_images_are_upsized() {
+        assert_eq!(
+            upgrade_image_url("https://www.allbirds.com/cdn/shop/files/shoe.png?v=17&width=100"),
+            "https://www.allbirds.com/cdn/shop/files/shoe.png?v=17&width=1000"
+        );
+        assert_eq!(
+            upgrade_image_url("https://example.com/a.jpg?width=100"),
+            "https://example.com/a.jpg?width=100"
+        );
+    }
+
+    #[test]
+    fn known_store_names() {
+        assert_eq!(
+            store_from_url(&Url::parse("https://www.bestbuy.com/site/x").unwrap()).as_deref(),
+            Some("Best Buy")
+        );
+        assert_eq!(
+            store_from_url(&Url::parse("https://www.rei.com/x").unwrap()).as_deref(),
+            Some("REI")
+        );
     }
 
     #[test]

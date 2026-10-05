@@ -10,7 +10,7 @@
     <h3>{% if let Some(u) = iv.item.url %}<a href="{{ u }}" target="_blank" rel="noopener noreferrer nofollow">{{ iv.item.title }}</a>{% else %}{{ iv.item.title }}{% endif %}</h3>
     <p class="item-meta">
       {% if let Some(p) = iv.item.price_display() %}<b class="price">{{ p }}</b>{% endif %}
-      {% if let Some(s) = iv.item.store %}<span>{{ s }}</span>{% else if let Some(h) = iv.item.host() %}<span>{{ h }}</span>{% endif %}
+      {% if let Some(u) = iv.item.url %}<a class="store-link" href="{{ u }}" target="_blank" rel="noopener noreferrer nofollow">{% if let Some(s) = iv.item.store %}{{ s }}{% else if let Some(h) = iv.item.host() %}{{ h }}{% else %}View{% endif %} ↗</a>{% else if let Some(s) = iv.item.store %}<span>{{ s }}</span>{% endif %}
     </p>
     {% if let Some(n) = iv.item.notes %}<p class="item-notes">{{ n }}</p>{% endif %}
 
@@ -28,7 +28,6 @@
     {% endif %}
 
     <div class="item-actions">
-      {% if let Some(u) = iv.item.url %}<a class="btn btn-small btn-ghost" href="{{ u }}" target="_blank" rel="noopener noreferrer nofollow">View in store ↗</a>{% endif %}
       {% if can_claim && !iv.item.received %}
         {% if let Some(mine) = iv.my_claim %}
           {% if !public_view %}
@@ -44,8 +43,6 @@
             {% endif %}
             <button class="btn btn-small" type="submit">{% if iv.my_claim.is_some() %}Get another{% else %}🎁 I'll get this{% endif %}</button>
           </form>
-        {% else if iv.my_claim.is_none() %}
-          <span class="muted small">All reserved</span>
         {% endif %}
       {% endif %}
       {% if is_editor %}

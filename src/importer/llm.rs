@@ -68,7 +68,10 @@ impl std::fmt::Debug for LlmConfig {
 }
 
 fn env(name: &str) -> Option<String> {
-    std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+    std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 impl LlmConfig {
@@ -78,7 +81,9 @@ impl LlmConfig {
             Some("none" | "off") => return Ok(None),
             Some("anthropic" | "claude") => ProviderKind::Anthropic,
             Some("openai" | "openai-compatible" | "ollama") => ProviderKind::OpenAiCompatible,
-            Some(other) => anyhow::bail!("Unknown WT_LLM_PROVIDER {other:?} (expected anthropic, openai or none)"),
+            Some(other) => anyhow::bail!(
+                "Unknown WT_LLM_PROVIDER {other:?} (expected anthropic, openai or none)"
+            ),
             None if env("ANTHROPIC_API_KEY").is_some() => ProviderKind::Anthropic,
             None => return Ok(None),
         };
@@ -86,14 +91,17 @@ impl LlmConfig {
             ProviderKind::Anthropic => LlmConfig {
                 api_key: env("WT_LLM_API_KEY").or_else(|| env("ANTHROPIC_API_KEY")),
                 model: env("WT_LLM_MODEL").unwrap_or_else(|| "claude-opus-5-5".into()),
-                base_url: env("WT_LLM_BASE_URL").unwrap_or_else(|| "https://api.anthropic.com".into()),
+                base_url: env("WT_LLM_BASE_URL")
+                    .unwrap_or_else(|| "https://api.anthropic.com".into()),
                 kind,
             },
             ProviderKind::OpenAiCompatible => LlmConfig {
                 api_key: env("WT_LLM_API_KEY").or_else(|| env("OPENAI_API_KEY")),
-                model: env("WT_LLM_MODEL")
-                    .ok_or_else(|| anyhow::anyhow!("WT_LLM_MODEL is required for the openai provider"))?,
-                base_url: env("WT_LLM_BASE_URL").unwrap_or_else(|| "https://api.openai.com/v1".into()),
+                model: env("WT_LLM_MODEL").ok_or_else(|| {
+                    anyhow::anyhow!("WT_LLM_MODEL is required for the openai provider")
+                })?,
+                base_url: env("WT_LLM_BASE_URL")
+                    .unwrap_or_else(|| "https://api.openai.com/v1".into()),
                 kind,
             },
         };
@@ -109,8 +117,14 @@ impl LlmConfig {
             .build()
             .expect("llm http client");
         match self.kind {
-            ProviderKind::Anthropic => Arc::new(AnthropicProvider { cfg: self.clone(), http }),
-            ProviderKind::OpenAiCompatible => Arc::new(OpenAiCompatibleProvider { cfg: self.clone(), http }),
+            ProviderKind::Anthropic => Arc::new(AnthropicProvider {
+                cfg: self.clone(),
+                http,
+            }),
+            ProviderKind::OpenAiCompatible => Arc::new(OpenAiCompatibleProvider {
+                cfg: self.clone(),
+                http,
+            }),
         }
     }
 }
@@ -139,10 +153,17 @@ pub trait LlmProvider: Send + Sync {
     fn label(&self) -> String;
 
     /// Run a single prompt and return a JSON object matching `schema`.
-    async fn complete_json(&self, system: &str, user: &str, schema: &Value) -> anyhow::Result<Value>;
+    async fn complete_json(
+        &self,
+        system: &str,
+        user: &str,
+        schema: &Value,
+    ) -> anyhow::Result<Value>;
 
     async fn extract_product(&self, digest: &str) -> anyhow::Result<LlmProduct> {
-        let value = self.complete_json(SYSTEM_PROMPT, &user_prompt(digest), &product_schema()).await?;
+        let value = self
+            .complete_json(SYSTEM_PROMPT, &user_prompt(digest), &product_schema())
+            .await?;
         Ok(serde_json::from_value(value)?)
     }
 }
@@ -181,8 +202,12 @@ pub fn parse_json_reply(text: &str) -> anyhow::Result<Value> {
     if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
         return Ok(v);
     }
-    let start = trimmed.find('{').ok_or_else(|| anyhow::anyhow!("model reply contained no JSON"))?;
-    let end = trimmed.rfind('}').ok_or_else(|| anyhow::anyhow!("model reply contained no JSON"))?;
+    let start = trimmed
+        .find('{')
+        .ok_or_else(|| anyhow::anyhow!("model reply contained no JSON"))?;
+    let end = trimmed
+        .rfind('}')
+        .ok_or_else(|| anyhow::anyhow!("model reply contained no JSON"))?;
     Ok(serde_json::from_str(&trimmed[start..=end])?)
 }
 
@@ -203,7 +228,9 @@ impl AnthropicProvider {
     fn supports_fallbacks(&self) -> bool {
         let m = self.cfg.model.as_str();
         self.cfg.base_url.contains("api.anthropic.com")
-            && (m.starts_with("claude-opus-5") || m.starts_with("claude-fable-5") || m == "claude-sonnet-5-5")
+            && (m.starts_with("claude-opus-5")
+                || m.starts_with("claude-fable-5")
+                || m == "claude-sonnet-5-5")
     }
 }
 
@@ -213,7 +240,12 @@ impl LlmProvider for AnthropicProvider {
         format!("anthropic/{}", self.cfg.model)
     }
 
-    async fn complete_json(&self, system: &str, user: &str, schema: &Value) -> anyhow::Result<Value> {
+    async fn complete_json(
+        &self,
+        system: &str,
+        user: &str,
+        schema: &Value,
+    ) -> anyhow::Result<Value> {
         let mut output_config = json!({ "format": { "type": "json_schema", "schema": schema } });
         if self.supports_effort() {
             // Extraction is a simple task: keep thinking light to save time and tokens.
@@ -228,7 +260,10 @@ impl LlmProvider for AnthropicProvider {
         });
         let mut req = self
             .http
-            .post(format!("{}/v1/messages", self.cfg.base_url.trim_end_matches('/')))
+            .post(format!(
+                "{}/v1/messages",
+                self.cfg.base_url.trim_end_matches('/')
+            ))
             .header("anthropic-version", "2023-06-01")
             .header("x-api-key", self.cfg.api_key.as_deref().unwrap_or_default());
         if self.supports_fallbacks() {
@@ -239,7 +274,10 @@ impl LlmProvider for AnthropicProvider {
         let status = resp.status();
         let payload: Value = resp.json().await?;
         if !status.is_success() {
-            let msg = payload.pointer("/error/message").and_then(Value::as_str).unwrap_or("unknown error");
+            let msg = payload
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error");
             anyhow::bail!("Claude API error {status}: {msg}");
         }
         match payload.get("stop_reason").and_then(Value::as_str) {
@@ -271,7 +309,10 @@ pub struct OpenAiCompatibleProvider {
 
 impl OpenAiCompatibleProvider {
     async fn send(&self, body: &Value) -> anyhow::Result<(reqwest::StatusCode, Value)> {
-        let mut req = self.http.post(format!("{}/chat/completions", self.cfg.base_url.trim_end_matches('/')));
+        let mut req = self.http.post(format!(
+            "{}/chat/completions",
+            self.cfg.base_url.trim_end_matches('/')
+        ));
         if let Some(key) = &self.cfg.api_key {
             req = req.bearer_auth(key);
         }
@@ -287,7 +328,12 @@ impl LlmProvider for OpenAiCompatibleProvider {
         format!("openai-compatible/{}", self.cfg.model)
     }
 
-    async fn complete_json(&self, system: &str, user: &str, schema: &Value) -> anyhow::Result<Value> {
+    async fn complete_json(
+        &self,
+        system: &str,
+        user: &str,
+        schema: &Value,
+    ) -> anyhow::Result<Value> {
         let system = format!(
             "{system}\nRespond with only a JSON object with the keys title, price, currency, image_url, store, description."
         );
@@ -309,7 +355,10 @@ impl LlmProvider for OpenAiCompatibleProvider {
             (status, payload) = self.send(&body).await?;
         }
         if !status.is_success() {
-            let msg = payload.pointer("/error/message").and_then(Value::as_str).unwrap_or("unknown error");
+            let msg = payload
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error");
             anyhow::bail!("LLM API error {status}: {msg}");
         }
         let text = payload
@@ -326,7 +375,8 @@ mod tests {
 
     #[test]
     fn parses_fenced_json() {
-        let v = parse_json_reply("Sure!\n```json\n{\"title\": \"Lamp\", \"price\": \"5\"}\n```").unwrap();
+        let v = parse_json_reply("Sure!\n```json\n{\"title\": \"Lamp\", \"price\": \"5\"}\n```")
+            .unwrap();
         assert_eq!(v["title"], "Lamp");
     }
 

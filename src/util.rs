@@ -21,14 +21,18 @@ pub fn urlencode(s: &str) -> String {
 /// Only allow local, absolute-path redirects (prevents open redirects via `?next=`).
 pub fn safe_next(next: Option<&str>) -> String {
     match next {
-        Some(n) if n.starts_with('/') && !n.starts_with("//") && !n.starts_with("/\\") => n.to_string(),
+        Some(n) if n.starts_with('/') && !n.starts_with("//") && !n.starts_with("/\\") => {
+            n.to_string()
+        }
         _ => "/".to_string(),
     }
 }
 
 /// Trim a form field; empty becomes `None`.
 pub fn non_empty(s: Option<&str>) -> Option<String> {
-    s.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+    s.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 pub fn today() -> time::Date {
@@ -36,7 +40,11 @@ pub fn today() -> time::Date {
 }
 
 pub fn parse_date(s: &str) -> Option<time::Date> {
-    time::Date::parse(s.trim(), time::macros::format_description!("[year]-[month]-[day]")).ok()
+    time::Date::parse(
+        s.trim(),
+        time::macros::format_description!("[year]-[month]-[day]"),
+    )
+    .ok()
 }
 
 /// "today", "tomorrow", "in 12 days", "3 days ago".

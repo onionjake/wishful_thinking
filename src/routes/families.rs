@@ -13,7 +13,11 @@ use crate::AppState;
 pub async fn families_page(State(state): State<AppState>, ctx: Ctx) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
     let families = db::families_for_user(&state.db, user.id).await?;
-    render(FamiliesPage { ctx, families, error: None })
+    render(FamiliesPage {
+        ctx,
+        families,
+        error: None,
+    })
 }
 
 #[derive(Deserialize)]
@@ -22,27 +26,41 @@ pub struct FamilyForm {
     description: Option<String>,
 }
 
-pub async fn create_family(State(state): State<AppState>, ctx: Ctx, Form(f): Form<FamilyForm>) -> AppResult<Response> {
+pub async fn create_family(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Form(f): Form<FamilyForm>,
+) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
     let name = f.name.trim();
     if name.is_empty() || name.chars().count() > 80 {
         let families = db::families_for_user(&state.db, user.id).await?;
-        return render(FamiliesPage { ctx, families, error: Some("Give the family a name (up to 80 characters).".into()) });
+        return render(FamiliesPage {
+            ctx,
+            families,
+            error: Some("Give the family a name (up to 80 characters).".into()),
+        });
     }
     let mut tx = state.db.begin().await?;
-    let id: i64 = sqlx::query_scalar("INSERT INTO families (name, description, created_by) VALUES (?, ?, ?) RETURNING id")
-        .bind(name)
-        .bind(util::non_empty(f.description.as_deref()))
-        .bind(user.id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO families (name, description, created_by) VALUES (?, ?, ?) RETURNING id",
+    )
+    .bind(name)
+    .bind(util::non_empty(f.description.as_deref()))
+    .bind(user.id)
+    .fetch_one(&mut *tx)
+    .await?;
     sqlx::query("INSERT INTO family_members (family_id, user_id, role) VALUES (?, ?, 'owner')")
         .bind(id)
         .bind(user.id)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    Ok(redirect_flash(&format!("/families/{id}"), "ok", "Family created. Make an invite link to bring everyone in."))
+    Ok(redirect_flash(
+        &format!("/families/{id}"),
+        "ok",
+        "Family created. Make an invite link to bring everyone in.",
+    ))
 }
 
 /// The family summary for a member, or 404 for non-members.
@@ -65,7 +83,11 @@ struct InviteRow {
     max_uses: Option<i64>,
 }
 
-pub async fn family_page(State(state): State<AppState>, ctx: Ctx, Path(id): Path<i64>) -> AppResult<Response> {
+pub async fn family_page(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
     let family = member_family(&state, id, user.id).await?;
     let members = db::family_members(&state.db, id).await?;
@@ -88,16 +110,31 @@ pub async fn family_page(State(state): State<AppState>, ctx: Ctx, Path(id): Path
             url: state.absolute(&ctx.base_url, &format!("/join/{}", i.token)),
             created_by_name: i.created_by_name,
             created_by: i.created_by,
-            expires_at: i.expires_at.map(|e| util::pretty_date(&e[..10.min(e.len())])),
+            expires_at: i
+                .expires_at
+                .map(|e| util::pretty_date(&e[..10.min(e.len())])),
             uses: i.uses,
             max_uses: i.max_uses,
         })
         .collect();
     let is_owner = family.role == "owner";
-    render(FamilyPage { ctx, family, members, lists, invites, is_owner, me: user.id })
+    render(FamilyPage {
+        ctx,
+        family,
+        members,
+        lists,
+        invites,
+        is_owner,
+        me: user.id,
+    })
 }
 
-pub async fn rename_family(State(state): State<AppState>, ctx: Ctx, Path(id): Path<i64>, Form(f): Form<FamilyForm>) -> AppResult<Response> {
+pub async fn rename_family(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+    Form(f): Form<FamilyForm>,
+) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
     let family = member_family(&state, id, user.id).await?;
     if family.role != "owner" {
@@ -105,7 +142,11 @@ pub async fn rename_family(State(state): State<AppState>, ctx: Ctx, Path(id): Pa
     }
     let name = f.name.trim();
     if name.is_empty() || name.chars().count() > 80 {
-        return Ok(redirect_flash(&format!("/families/{id}"), "error", "Family names need 1–80 characters."));
+        return Ok(redirect_flash(
+            &format!("/families/{id}"),
+            "error",
+            "Family names need 1–80 characters.",
+        ));
     }
     sqlx::query("UPDATE families SET name = ?, description = ? WHERE id = ?")
         .bind(name)
@@ -113,7 +154,11 @@ pub async fn rename_family(State(state): State<AppState>, ctx: Ctx, Path(id): Pa
         .bind(id)
         .execute(&state.db)
         .await?;
-    Ok(redirect_flash(&format!("/families/{id}"), "ok", "Family updated."))
+    Ok(redirect_flash(
+        &format!("/families/{id}"),
+        "ok",
+        "Family updated.",
+    ))
 }
 
 #[derive(Deserialize)]
@@ -122,7 +167,12 @@ pub struct InviteForm {
     max_uses: Option<i64>,
 }
 
-pub async fn create_invite(State(state): State<AppState>, ctx: Ctx, Path(id): Path<i64>, Form(f): Form<InviteForm>) -> AppResult<Response> {
+pub async fn create_invite(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+    Form(f): Form<InviteForm>,
+) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
     member_family(&state, id, user.id).await?;
     let expires = f.expires_days.filter(|d| *d > 0).map(|d| d.min(365));
@@ -139,10 +189,18 @@ pub async fn create_invite(State(state): State<AppState>, ctx: Ctx, Path(id): Pa
     .bind(max_uses)
     .execute(&state.db)
     .await?;
-    Ok(redirect_flash(&format!("/families/{id}#invites"), "ok", "Invite link ready — copy it and send it to your family."))
+    Ok(redirect_flash(
+        &format!("/families/{id}#invites"),
+        "ok",
+        "Invite link ready — copy it and send it to your family.",
+    ))
 }
 
-pub async fn revoke_invite(State(state): State<AppState>, ctx: Ctx, Path((id, iid)): Path<(i64, i64)>) -> AppResult<Response> {
+pub async fn revoke_invite(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path((id, iid)): Path<(i64, i64)>,
+) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
     let family = member_family(&state, id, user.id).await?;
     let res = sqlx::query("UPDATE family_invites SET revoked = 1 WHERE id = ? AND family_id = ? AND (created_by = ? OR ?)")
@@ -155,7 +213,11 @@ pub async fn revoke_invite(State(state): State<AppState>, ctx: Ctx, Path((id, ii
     if res.rows_affected() == 0 {
         return Err(AppError::Forbidden);
     }
-    Ok(redirect_flash(&format!("/families/{id}#invites"), "ok", "Invite link revoked."))
+    Ok(redirect_flash(
+        &format!("/families/{id}#invites"),
+        "ok",
+        "Invite link revoked.",
+    ))
 }
 
 /// Remove a user from a family, unsharing their lists from it and handing over ownership if needed.
@@ -171,12 +233,16 @@ async fn remove_from_family(state: &AppState, family_id: i64, user_id: i64) -> A
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
-    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM family_members WHERE family_id = ?")
-        .bind(family_id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM family_members WHERE family_id = ?")
+            .bind(family_id)
+            .fetch_one(&mut *tx)
+            .await?;
     let deleted = if remaining == 0 {
-        sqlx::query("DELETE FROM families WHERE id = ?").bind(family_id).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM families WHERE id = ?")
+            .bind(family_id)
+            .execute(&mut *tx)
+            .await?;
         true
     } else {
         // Promote the longest-standing member if no owner is left.
@@ -194,31 +260,61 @@ async fn remove_from_family(state: &AppState, family_id: i64, user_id: i64) -> A
     Ok(deleted)
 }
 
-pub async fn remove_member(State(state): State<AppState>, ctx: Ctx, Path((id, uid)): Path<(i64, i64)>) -> AppResult<Response> {
+pub async fn remove_member(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path((id, uid)): Path<(i64, i64)>,
+) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
     let family = member_family(&state, id, user.id).await?;
     if family.role != "owner" || uid == user.id {
         return Err(AppError::Forbidden);
     }
     remove_from_family(&state, id, uid).await?;
-    Ok(redirect_flash(&format!("/families/{id}"), "ok", "Member removed."))
+    Ok(redirect_flash(
+        &format!("/families/{id}"),
+        "ok",
+        "Member removed.",
+    ))
 }
 
-pub async fn leave_family(State(state): State<AppState>, ctx: Ctx, Path(id): Path<i64>) -> AppResult<Response> {
+pub async fn leave_family(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
     let family = member_family(&state, id, user.id).await?;
     remove_from_family(&state, id, user.id).await?;
-    Ok(redirect_flash("/families", "ok", &format!("You left {}.", family.name)))
+    Ok(redirect_flash(
+        "/families",
+        "ok",
+        &format!("You left {}.", family.name),
+    ))
 }
 
-pub async fn delete_family(State(state): State<AppState>, ctx: Ctx, Path(id): Path<i64>) -> AppResult<Response> {
+pub async fn delete_family(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
     let family = member_family(&state, id, user.id).await?;
     if family.role != "owner" {
         return Err(AppError::Forbidden);
     }
-    sqlx::query("DELETE FROM families WHERE id = ?").bind(id).execute(&state.db).await?;
-    Ok(redirect_flash("/families", "ok", &format!("Deleted {}. Lists are kept, just no longer shared there.", family.name)))
+    sqlx::query("DELETE FROM families WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    Ok(redirect_flash(
+        "/families",
+        "ok",
+        &format!(
+            "Deleted {}. Lists are kept, just no longer shared there.",
+            family.name
+        ),
+    ))
 }
 
 // ---------------------------------------------------------------- joining
@@ -244,18 +340,26 @@ async fn valid_invite(state: &AppState, token: &str) -> AppResult<Option<InviteI
     .await?)
 }
 
-pub async fn join_page(State(state): State<AppState>, ctx: Ctx, Path(token): Path<String>) -> AppResult<Response> {
+pub async fn join_page(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(token): Path<String>,
+) -> AppResult<Response> {
     let Some(invite) = valid_invite(&state, &token).await? else {
         return Err(AppError::BadRequest(
-            "This invite link has expired or was turned off. Ask whoever sent it for a new one.".into(),
+            "This invite link has expired or was turned off. Ask whoever sent it for a new one."
+                .into(),
         ));
     };
-    let member_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM family_members WHERE family_id = ?")
-        .bind(invite.family_id)
-        .fetch_one(&state.db)
-        .await?;
+    let member_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM family_members WHERE family_id = ?")
+            .bind(invite.family_id)
+            .fetch_one(&state.db)
+            .await?;
     let already_member = match &ctx.user {
-        Some(u) => db::family_role(&state.db, invite.family_id, u.id).await?.is_some(),
+        Some(u) => db::family_role(&state.db, invite.family_id, u.id)
+            .await?
+            .is_some(),
         None => false,
     };
     render(JoinPage {
@@ -269,26 +373,44 @@ pub async fn join_page(State(state): State<AppState>, ctx: Ctx, Path(token): Pat
     })
 }
 
-pub async fn join(State(state): State<AppState>, ctx: Ctx, Path(token): Path<String>) -> AppResult<Response> {
+pub async fn join(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(token): Path<String>,
+) -> AppResult<Response> {
     let Some(user) = ctx.user.clone() else {
-        return Ok(Redirect::to(&format!("/signup?next={}", util::urlencode(&format!("/join/{token}")))).into_response());
+        return Ok(Redirect::to(&format!(
+            "/signup?next={}",
+            util::urlencode(&format!("/join/{token}"))
+        ))
+        .into_response());
     };
     let Some(invite) = valid_invite(&state, &token).await? else {
-        return Err(AppError::BadRequest("This invite link has expired or was turned off.".into()));
+        return Err(AppError::BadRequest(
+            "This invite link has expired or was turned off.".into(),
+        ));
     };
     let mut tx = state.db.begin().await?;
-    let res = sqlx::query("INSERT OR IGNORE INTO family_members (family_id, user_id, role) VALUES (?, ?, 'member')")
-        .bind(invite.family_id)
-        .bind(user.id)
-        .execute(&mut *tx)
-        .await?;
+    let res = sqlx::query(
+        "INSERT OR IGNORE INTO family_members (family_id, user_id, role) VALUES (?, ?, 'member')",
+    )
+    .bind(invite.family_id)
+    .bind(user.id)
+    .execute(&mut *tx)
+    .await?;
     if res.rows_affected() > 0 {
-        sqlx::query("UPDATE family_invites SET uses = uses + 1 WHERE id = ?").bind(invite.id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE family_invites SET uses = uses + 1 WHERE id = ?")
+            .bind(invite.id)
+            .execute(&mut *tx)
+            .await?;
     }
     tx.commit().await?;
     Ok(redirect_flash(
         &format!("/families/{}", invite.family_id),
         "ok",
-        &format!("Welcome to {}! Lists shared with the family now show up on your home page.", invite.family_name),
+        &format!(
+            "Welcome to {}! Lists shared with the family now show up on your home page.",
+            invite.family_name
+        ),
     ))
 }
