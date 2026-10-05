@@ -1,0 +1,33 @@
+[package]
+name = "wishful_thinking"
+version = "0.1.0"
+edition = "2021"
+description = "Wish lists for families: share lists, reserve gifts, import items from any store URL."
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+argon2 = "0.5"
+askama = "0.12"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["macros"] }
+axum-extra = { version = "0.10", features = ["form"] }
+base64 = "0.22"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "gzip", "brotli", "deflate"] }
+scraper = "0.20"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
+thiserror = "2"
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

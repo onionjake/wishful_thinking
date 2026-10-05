@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Families · Wishful Thinking{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Families</h1><p class="muted">A family is a group of people who share wish lists — your household, the grandparents, the cousins…</p></div>
+</div>
+{% if let Some(e) = error %}<p class="form-error">{{ e }}</p>{% endif %}
+<div class="grid">
+  {% for f in families %}
+  <a class="family-card card" href="/families/{{ f.id }}">
+    <h3>{{ f.name }}</h3>
+    {% if let Some(d) = f.description %}<p class="muted small">{{ d }}</p>{% endif %}
+    <div class="chips">
+      <span class="chip">👥 {{ f.member_count }} member{% if f.member_count != 1 %}s{% endif %}</span>
+      <span class="chip">📝 {{ f.list_count }} list{% if f.list_count != 1 %}s{% endif %}</span>
+      {% if f.role == "owner" %}<span class="chip chip-date">Organizer</span>{% endif %}
+    </div>
+  </a>
+  {% endfor %}
+  <form method="post" action="/families" class="card stack new-family">
+    <h3>Start a family</h3>
+    <label>Name<input name="name" required maxlength="80" placeholder="e.g. The Garcias"></label>
+    <label>Description <span class="muted small">(optional)</span><input name="description" maxlength="200" placeholder="Mom's side, holiday gift exchange…"></label>
+    <button class="btn" type="submit">Create family</button>
+  </form>
+</div>
+{% endblock %}

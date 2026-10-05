@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}{{ list.title }} · Wishful Thinking{% endblock %}
+{% block head %}{% if public_view %}<meta name="robots" content="noindex">{% endif %}{% endblock %}
+{% block content %}
+{% if !public_view %}<p class="crumbs"><a href="/">← Lists</a></p>{% endif %}
+<section class="list-hero">
+  <div>
+    <h1>{{ list.title }}</h1>
+    <p class="muted">
+      {% if let Some(r) = list.recipient_name %}For <b>{{ r }}</b> · {% endif %}
+      {% if is_owner %}Your list{% else %}From {{ owner_name }}{% endif %}
+      {% if let Some(d) = self.pretty_date() %} · {{ d }}{% endif %}
+    </p>
+    <div class="chips">
+      {% if let Some(cd) = self.countdown() %}<span class="chip {% if list.event_is_past() %}chip-muted{% else %}chip-date{% endif %}">📅 {{ cd }}</span>{% endif %}
+      {% if let Some(t) = self.total_display() %}<span class="chip">💰 {{ t }} total</span>{% endif %}
+      {% if is_editor %}
+        {% for f in family_names %}<span class="chip">👨‍👩‍👧 {{ f }}</span>{% endfor %}
+        {% if list.public_token.is_some() %}<span class="chip">🔗 Public link on</span>{% endif %}
+        {% if family_names.is_empty() && list.public_token.is_none() %}<span class="chip chip-muted">🔒 Only you</span>{% endif %}
+        {% if list.archived %}<span class="chip chip-muted">Archived</span>{% endif %}
+      {% endif %}
+    </div>
+    {% if let Some(d) = list.description %}<p class="list-notes">{{ d }}</p>{% endif %}
+  </div>
+  {% if is_editor %}
+  <div class="list-actions">
+    <a class="btn" href="/lists/{{ list.id }}/items/new">+ Add a wish</a>
+    <a class="btn btn-ghost" href="/lists/{{ list.id }}/share">Share</a>
+    <a class="btn btn-ghost" href="/lists/{{ list.id }}/edit">Edit</a>
+  </div>
+  {% endif %}
+</section>
+
+{% if is_editor && !claims_visible %}
+<p class="hint">🤫 Reservations are hidden from you so gifts stay a surprise.</p>
+{% endif %}
+{% if public_view && ctx.user.is_none() %}
+<p class="hint">Planning to buy something? Tap <b>I'll get this</b> and enter your name so nobody else buys it too. The list owner won't see who.</p>
+{% endif %}
+
+{% if items.is_empty() %}
+<div class="empty-card">
+  {% if is_editor %}
+  <p><b>This list is empty.</b> Paste a link from any store and we'll fill in the details.</p>
+  <a class="btn btn-small" href="/lists/{{ list.id }}/items/new">Add the first wish</a>
+  {% else %}
+  <p>Nothing on this list yet — check back soon.</p>
+  {% endif %}
+</div>
+{% else %}
+<div class="toolbar">
+  <span class="muted small">{{ items.len() }} wish{% if items.len() != 1 %}es{% endif %}</span>
+  <form method="get" class="sort-form">
+    <label class="small muted">Sort
+      <select name="sort" data-autosubmit>
+        <option value="priority" {% if sort == "priority" %}selected{% endif %}>Most wanted first</option>
+        <option value="price" {% if sort == "price" %}selected{% endif %}>Price: low to high</option>
+        <option value="price_desc" {% if sort == "price_desc" %}selected{% endif %}>Price: high to low</option>
+        <option value="newest" {% if sort == "newest" %}selected{% endif %}>Newest</option>
+      </select>
+    </label>
+    <noscript><button class="btn btn-small btn-ghost">Go</button></noscript>
+  </form>
+</div>
+<div class="items">
+  {% for iv in items %}{% include "_item_card.html" %}{% endfor %}
+</div>
+{% endif %}
+
+{% if !received.is_empty() %}
+<details class="section-collapse">
+  <summary>Already received ({{ received.len() }})</summary>
+  <div class="items">
+    {% for iv in received %}{% include "_item_card.html" %}{% endfor %}
+  </div>
+</details>
+{% endif %}
+
+{% if public_view && ctx.user.is_none() %}
+<p class="center muted small cta-foot">Want your own wish lists? <a href="/signup">Create a free account</a>.</p>
+{% endif %}
+{% endblock %}

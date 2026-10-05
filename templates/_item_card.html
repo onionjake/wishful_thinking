@@ -1,0 +1,57 @@
+<article class="item{% if iv.item.received %} received{% endif %}{% if claims_visible && iv.item.fully_claimed() %} taken{% endif %}" id="item-{{ iv.item.id }}">
+  <div class="item-img">
+    {% if let Some(img) = iv.item.image_url %}<img src="{{ img }}" alt="" loading="lazy" referrerpolicy="no-referrer">{% else %}<span>🎁</span>{% endif %}
+  </div>
+  <div class="item-body">
+    <div class="item-top">
+      <span class="prio prio-{{ iv.item.priority }}">{{ iv.item.priority_label() }}</span>
+      {% if iv.item.quantity > 1 %}<span class="chip chip-small">wants {{ iv.item.quantity }}</span>{% endif %}
+    </div>
+    <h3>{% if let Some(u) = iv.item.url %}<a href="{{ u }}" target="_blank" rel="noopener noreferrer nofollow">{{ iv.item.title }}</a>{% else %}{{ iv.item.title }}{% endif %}</h3>
+    <p class="item-meta">
+      {% if let Some(p) = iv.item.price_display() %}<b class="price">{{ p }}</b>{% endif %}
+      {% if let Some(s) = iv.item.store %}<span>{{ s }}</span>{% else if let Some(h) = iv.item.host() %}<span>{{ h }}</span>{% endif %}
+    </p>
+    {% if let Some(n) = iv.item.notes %}<p class="item-notes">{{ n }}</p>{% endif %}
+
+    {% if claims_visible && !iv.item.received %}
+    <div class="claims">
+      {% if claim_names_visible %}
+        {% for c in iv.other_claims() %}<span class="pill pill-ok">{% if c.purchased %}✓ Bought by{% else %}Reserved by{% endif %} {{ c.claimer_name }}{% if c.quantity > 1 %} ×{{ c.quantity }}{% endif %}</span>{% endfor %}
+      {% else %}
+        {% if iv.other_claims().len() > 0 %}<span class="pill pill-ok">Reserved{% if iv.item.quantity > 1 %} ({{ iv.item.claimed_qty }} of {{ iv.item.quantity }}){% endif %}</span>{% endif %}
+      {% endif %}
+      {% if let Some(mine) = iv.my_claim %}
+        <span class="pill pill-mine">⭐ You're getting this{% if mine.quantity > 1 %} ×{{ mine.quantity }}{% endif %}</span>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    <div class="item-actions">
+      {% if let Some(u) = iv.item.url %}<a class="btn btn-small btn-ghost" href="{{ u }}" target="_blank" rel="noopener noreferrer nofollow">View in store ↗</a>{% endif %}
+      {% if can_claim && !iv.item.received %}
+        {% if let Some(mine) = iv.my_claim %}
+          {% if !public_view %}
+          <form method="post" action="/claims/{{ mine.id }}/purchased"><input type="hidden" name="back" value="/lists/{{ list.id }}#item-{{ iv.item.id }}"><button class="btn btn-small btn-ghost" type="submit">{% if mine.purchased %}↩ Not bought yet{% else %}✓ Mark bought{% endif %}</button></form>
+          {% endif %}
+          <form method="post" action="{{ self.unclaim_action(mine.id) }}"><button class="btn btn-small btn-ghost" type="submit">Release</button></form>
+        {% endif %}
+        {% if iv.item.remaining() > 0 %}
+          <form method="post" action="{{ self.claim_action(iv.item.id) }}" class="claim-form">
+            {% if self.needs_guest_name() %}<input name="guest_name" placeholder="Your name" required maxlength="60" aria-label="Your name">{% endif %}
+            {% if iv.item.remaining() > 1 %}
+            <select name="quantity" aria-label="How many">{% for n in 1..=iv.item.remaining() %}<option value="{{ n }}">{{ n }}</option>{% endfor %}</select>
+            {% endif %}
+            <button class="btn btn-small" type="submit">{% if iv.my_claim.is_some() %}Get another{% else %}🎁 I'll get this{% endif %}</button>
+          </form>
+        {% else if iv.my_claim.is_none() %}
+          <span class="muted small">All reserved</span>
+        {% endif %}
+      {% endif %}
+      {% if is_editor %}
+        <a class="btn btn-small btn-ghost" href="/items/{{ iv.item.id }}/edit">Edit</a>
+        <form method="post" action="/items/{{ iv.item.id }}/received"><button class="btn btn-small btn-ghost" type="submit">{% if iv.item.received %}Move back{% else %}Got it ✓{% endif %}</button></form>
+      {% endif %}
+    </div>
+  </div>
+</article>
