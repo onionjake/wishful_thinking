@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}{% if item_id.is_some() %}Edit wish{% else %}Add a wish{% endif %} · {{ list.title }}{% endblock %}
+{% block content %}
+<div class="narrow">
+  <p class="crumbs"><a href="/lists/{{ list.id }}">← {{ list.title }}</a></p>
+  <h1>{% if item_id.is_some() %}Edit wish{% else %}Add a wish{% endif %}</h1>
+
+  <section class="card import-card" id="import">
+    <form method="get" action="/lists/{{ list.id }}/items/new" class="import-form" data-import>
+      <label for="import-url"><b>Paste a link from any store</b></label>
+      <div class="copy-row">
+        <input id="import-url" name="url" type="url" inputmode="url" placeholder="https://www.example.com/product/…" value="{% if item_id.is_none() %}{{ form.url }}{% endif %}">
+        <button class="btn" type="submit"><span class="btn-label">Fetch details</span><span class="spinner" aria-hidden="true"></span></button>
+      </div>
+      <p class="muted small import-help">We read the page's product data to fill in the name, price and photo.{% if let Some(l) = ctx.llm_label %} Tricky pages get help from an AI model ({{ l }}).{% endif %}</p>
+    </form>
+    <div class="import-status" data-import-status>
+      {% if let Some(e) = import_error %}<p class="form-error">{{ e }}</p>{% endif %}
+      {% if let Some(imp) = import %}
+        {% if !self.import_fields_found().is_empty() %}
+        <p class="notice">✨ Found {{ self.import_fields_found().join(", ") }}{% if let Some(m) = imp.llm_used %} <span class="muted small">(with help from {{ m }})</span>{% endif %}. Check the details below, then save.</p>
+        {% endif %}
+        {% for w in imp.warnings %}<p class="warning">{{ w }}</p>{% endfor %}
+      {% endif %}
+    </div>
+  </section>
+
+  {% if let Some(e) = error %}<p class="form-error">{{ e }}</p>{% endif %}
+  <form method="post" action="{% if let Some(id) = item_id %}/items/{{ id }}/edit{% else %}/lists/{{ list.id }}/items{% endif %}" class="card item-form" data-item-form>
+    <input type="hidden" name="import_source" value="{{ form.import_source }}">
+    <div class="item-form-grid">
+      <div class="preview">
+        <div class="preview-img" data-preview>{% if !form.image_url.is_empty() %}<img src="{{ form.image_url }}" alt="" referrerpolicy="no-referrer">{% else %}<span>🎁</span>{% endif %}</div>
+      </div>
+      <div class="stack">
+        <label>Name<input name="title" value="{{ form.title }}" required maxlength="200" placeholder="What do you wish for?"></label>
+        <div class="row">
+          <label>Price<input name="price" value="{{ form.price }}" inputmode="decimal" placeholder="0.00"></label>
+          <label>Currency
+            <select name="currency">
+              {% if !self.currency_known() && !form.currency.is_empty() %}<option selected>{{ form.currency }}</option>{% endif %}
+              {% for c in self.currencies() %}<option {% if form.currency_is(c) %}selected{% endif %}>{{ c }}</option>{% endfor %}
+            </select>
+          </label>
+        </div>
+        <label>Link<input name="url" value="{{ form.url }}" type="url" placeholder="https://…"></label>
+        <div class="row">
+          <label>Store<input name="store" value="{{ form.store }}" maxlength="80"></label>
+          <label>Picture URL<input name="image_url" value="{{ form.image_url }}" type="url" data-image-input></label>
+        </div>
+      </div>
+    </div>
+    <fieldset class="prio-pick">
+      <legend>How much do you want it?</legend>
+      <label><input type="radio" name="priority" value="1" {% if form.priority_is(1) %}checked{% endif %}><span>🔥 Most wanted</span></label>
+      <label><input type="radio" name="priority" value="2" {% if form.priority_is(2) %}checked{% endif %}><span>💛 Would love</span></label>
+      <label><input type="radio" name="priority" value="3" {% if form.priority_is(3) %}checked{% endif %}><span>🙂 Nice to have</span></label>
+    </fieldset>
+    <div class="row">
+      <label class="qty">How many?<input type="number" name="quantity" min="1" max="99" value="{{ form.quantity }}"></label>
+      <label class="grow">Notes <span class="muted small">(size, colour, model…)</span><input name="notes" value="{{ form.notes }}" maxlength="2000" placeholder="e.g. Size 8, the blue one"></label>
+    </div>
+    <div class="actions">
+      <button class="btn" type="submit">{% if item_id.is_some() %}Save changes{% else %}Add to list{% endif %}</button>
+      <a class="btn btn-ghost" href="/lists/{{ list.id }}">Cancel</a>
+    </div>
+  </form>
+
+  {% if let Some(id) = item_id %}
+  <div class="card">
+    <h2>More</h2>
+    <div class="actions">
+      {% if !other_lists.is_empty() %}
+      <form method="post" action="/items/{{ id }}/copy" class="inline-form">
+        <select name="target_list" aria-label="Target list">{% for (lid, ltitle) in other_lists %}<option value="{{ lid }}">{{ ltitle }}</option>{% endfor %}</select>
+        <select name="mode" aria-label="Copy or move"><option value="copy">Copy</option><option value="move">Move</option></select>
+        <button class="btn btn-small btn-ghost" type="submit">Go</button>
+      </form>
+      {% endif %}
+      <form method="post" action="/items/{{ id }}/delete" data-confirm="Remove this wish?"><button class="btn btn-small btn-danger" type="submit">Delete wish</button></form>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

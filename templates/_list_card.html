@@ -1,0 +1,22 @@
+<a class="list-card{% if list.archived %} archived{% endif %}" href="/lists/{{ list.id }}">
+  <div class="thumbs thumbs-{{ list.preview_images().len() }}">
+    {% for img in list.preview_images() %}<img src="{{ img }}" alt="" loading="lazy" referrerpolicy="no-referrer">{% endfor %}
+    {% if list.preview_images().is_empty() %}<span class="thumb-empty">🎁</span>{% endif %}
+  </div>
+  <div class="list-card-body">
+    <h3>{{ list.title }}</h3>
+    <p class="muted small">
+      {% if let Some(r) = list.recipient_name %}For {{ r }}{% else %}By {{ list.owner_name }}{% endif %}
+      · {{ list.item_count }} wish{% if list.item_count != 1 %}es{% endif %}
+    </p>
+    <div class="chips">
+      {% if let Some(cd) = list.countdown() %}<span class="chip {% if list.event_is_past() %}chip-muted{% else %}chip-date{% endif %}">📅 {{ cd }}</span>{% endif %}
+      {% if show_sharing %}
+        {% if let Some(f) = list.family_names %}<span class="chip">👨‍👩‍👧 {{ f }}</span>{% endif %}
+        {% if list.public_token.is_some() %}<span class="chip">🔗 Public link</span>{% endif %}
+        {% if !list.is_shared() %}<span class="chip chip-muted">🔒 Private</span>{% endif %}
+      {% endif %}
+      {% if list.archived %}<span class="chip chip-muted">Archived</span>{% endif %}
+    </div>
+  </div>
+</a>

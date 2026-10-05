@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <div class="hero-copy">
+    <h1>Wish lists for the whole family.</h1>
+    <p class="lead">Make lists for yourself and the kids, share them with the people who matter, and let everyone quietly reserve gifts — so nobody buys the same thing twice and the surprise stays a surprise.</p>
+    <div class="hero-actions">
+      <a class="btn btn-large" href="/signup">Start a wish list</a>
+      <a class="btn btn-ghost btn-large" href="/login">I have an account</a>
+    </div>
+  </div>
+  <div class="hero-art" aria-hidden="true">
+    <div class="mock-card"><div class="mock-img" style="background:#ffd9c7">🧸</div><div><b>Plush bear</b><span>$24.00 · Most wanted</span><em class="pill pill-ok">Reserved by Grandma</em></div></div>
+    <div class="mock-card"><div class="mock-img" style="background:#d6ecff">🚲</div><div><b>Balance bike</b><span>$89.99 · Would love</span><em class="pill">Available</em></div></div>
+    <div class="mock-card"><div class="mock-img" style="background:#e5f6d9">📚</div><div><b>Picture book set</b><span>$32.50 · Nice to have</span><em class="pill">Available</em></div></div>
+  </div>
+</section>
+<section class="features">
+  <div class="feature"><div class="feature-icon">🔗</div><h3>Paste any link</h3><p>Drop in a product URL and we pull out the name, price and photo. An optional AI assistant handles the tricky stores.</p></div>
+  <div class="feature"><div class="feature-icon">👨‍👩‍👧</div><h3>Families</h3><p>Create a family, send one invite link, and everyone's lists show up in one place. Lists can live in several families.</p></div>
+  <div class="feature"><div class="feature-icon">🤫</div><h3>Secret reservations</h3><p>Relatives mark what they're buying. You never see it on your own list — unless you're the parent running it.</p></div>
+  <div class="feature"><div class="feature-icon">🌍</div><h3>Public links</h3><p>Turn on an unguessable link for friends outside the family. Guests can reserve with just their name.</p></div>
+</section>
+{% endblock %}

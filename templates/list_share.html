@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Share {{ list.title }} · Wishful Thinking{% endblock %}
+{% block content %}
+<div class="narrow">
+  <p class="crumbs"><a href="/lists/{{ list.id }}">← {{ list.title }}</a></p>
+  <h1>Share “{{ list.title }}”</h1>
+
+  <section class="card">
+    <h2>👨‍👩‍👧 Families</h2>
+    <p class="muted small">Everyone in a family you pick can see this list and reserve gifts.</p>
+    {% if families.is_empty() %}
+    <p>You're not in any families yet. <a href="/families">Create one</a> and invite your relatives with a link.</p>
+    {% else %}
+    <form method="post" action="/lists/{{ list.id }}/share" class="stack">
+      {% for (fam, on) in families %}
+      <label class="check"><input type="checkbox" name="families" value="{{ fam.id }}" {% if on %}checked{% endif %}>
+        <span><b>{{ fam.name }}</b> <span class="muted small">· {{ fam.member_count }} member{% if fam.member_count != 1 %}s{% endif %}</span></span></label>
+      {% endfor %}
+      <div class="actions"><button class="btn" type="submit">Save family sharing</button></div>
+    </form>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>🔗 Public link</h2>
+    <p class="muted small">Anyone with this link can view the list and reserve gifts by entering their name — handy for friends, teachers or coworkers. The link is long and random, so it can't be guessed, and you can turn it off or replace it any time.</p>
+    {% if let Some(url) = public_url %}
+    <div class="copy-row">
+      <input readonly value="{{ url }}" id="public-url" aria-label="Public link">
+      <button class="btn btn-small" type="button" data-copy="#public-url">Copy</button>
+    </div>
+    <div class="actions">
+      <a class="btn btn-small btn-ghost" href="{{ url }}" target="_blank">Preview</a>
+      <form method="post" action="/lists/{{ list.id }}/public"><input type="hidden" name="action" value="regenerate"><button class="btn btn-small btn-ghost" type="submit" data-confirm-click="Make a new link? The current link will stop working.">New link</button></form>
+      <form method="post" action="/lists/{{ list.id }}/public"><input type="hidden" name="action" value="disable"><button class="btn btn-small btn-danger" type="submit">Turn off</button></form>
+    </div>
+    {% else %}
+    <form method="post" action="/lists/{{ list.id }}/public"><input type="hidden" name="action" value="enable"><button class="btn" type="submit">Create public link</button></form>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>🤝 Co-managers</h2>
+    <p class="muted small">Co-managers can add, edit and remove items — useful when both parents look after a child's list. Pick from people in your families.</p>
+    {% if !managers.is_empty() %}
+    <ul class="people">
+      {% for m in managers %}
+      <li><span class="avatar avatar-small">{{ m.display_name.chars().next().unwrap_or('?') }}</span> {{ m.display_name }} <span class="muted small">{{ m.email }}</span>
+        {% if is_owner || ctx.is_user(m.id) %}
+        <form method="post" action="/lists/{{ list.id }}/managers/{{ m.id }}/remove"><button class="btn btn-small btn-ghost" type="submit">Remove</button></form>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% if is_owner %}
+      {% if candidates.is_empty() %}
+      <p class="muted small">Nobody else to add yet — invite people to one of your families first.</p>
+      {% else %}
+      <form method="post" action="/lists/{{ list.id }}/managers" class="inline-form">
+        <select name="user_id" aria-label="Person">{% for c in candidates %}<option value="{{ c.id }}">{{ c.display_name }}</option>{% endfor %}</select>
+        <button class="btn btn-small" type="submit">Add co-manager</button>
+      </form>
+      {% endif %}
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

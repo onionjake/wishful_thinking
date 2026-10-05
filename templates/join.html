@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Join {{ family_name }} · Wishful Thinking{% endblock %}
+{% block content %}
+<div class="auth-card card center">
+  <div class="big-emoji">💌</div>
+  <h1>Join {{ family_name }}</h1>
+  <p class="muted">{{ inviter_name }} invited you to share wish lists with {{ member_count }} {% if member_count == 1 %}person{% else %}people{% endif %} in <b>{{ family_name }}</b>.</p>
+  {% if already_member %}
+    <p>You're already a member.</p>
+    <a class="btn btn-block" href="/families/{{ family_id }}">Open {{ family_name }}</a>
+  {% else if ctx.user.is_some() %}
+    <form method="post" action="/join/{{ token }}"><button class="btn btn-block btn-large" type="submit">Join {{ family_name }}</button></form>
+    <p class="muted small">Signed in as {{ ctx.user_name() }}.</p>
+  {% else %}
+    <a class="btn btn-block btn-large" href="/signup?next=/join/{{ token }}">Create an account to join</a>
+    <p class="muted small">Already have an account? <a href="/login?next=/join/{{ token }}">Sign in</a></p>
+  {% endif %}
+</div>
+{% endblock %}

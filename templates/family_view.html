@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}{{ family.name }} · Wishful Thinking{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/families">← Families</a></p>
+<div class="page-head">
+  <div>
+    <h1>{{ family.name }}</h1>
+    {% if let Some(d) = family.description %}<p class="muted">{{ d }}</p>{% endif %}
+  </div>
+</div>
+
+<div class="two-col wide-left">
+  <section>
+    <h2 class="section-title">Wish lists in this family</h2>
+    {% if lists.is_empty() %}
+    <div class="empty-card"><p>No lists shared here yet. Open one of your lists and choose <b>Share</b> to add it.</p><a class="btn btn-small" href="/lists/new">New list</a></div>
+    {% else %}
+    <div class="grid grid-tight">
+      {% for list in lists %}{% let show_sharing = false %}{% include "_list_card.html" %}{% endfor %}
+    </div>
+    {% endif %}
+  </section>
+
+  <aside class="stack-lg">
+    <section class="card" id="invites">
+      <h2>Invite people</h2>
+      <p class="muted small">Send a link by text or email. New people can create an account right from the link.</p>
+      <form method="post" action="/families/{{ family.id }}/invites" class="stack">
+        <div class="row">
+          <label class="small">Expires
+            <select name="expires_days"><option value="7">in 7 days</option><option value="30" selected>in 30 days</option><option value="0">never</option></select>
+          </label>
+          <label class="small">Uses
+            <select name="max_uses"><option value="1">1 person</option><option value="10">up to 10</option><option value="0" selected>unlimited</option></select>
+          </label>
+        </div>
+        <button class="btn" type="submit">Create invite link</button>
+      </form>
+      {% for inv in invites %}
+      <div class="invite">
+        <div class="copy-row">
+          <input readonly value="{{ inv.url }}" id="invite-{{ inv.id }}" aria-label="Invite link">
+          <button class="btn btn-small" type="button" data-copy="#invite-{{ inv.id }}">Copy</button>
+        </div>
+        <p class="muted small">
+          By {{ inv.created_by_name }} · used {{ inv.uses }}{% if let Some(m) = inv.max_uses %}/{{ m }}{% endif %}
+          · {% if let Some(e) = inv.expires_at %}expires {{ e }}{% else %}never expires{% endif %}
+          {% if is_owner || inv.created_by == me %}
+          <form method="post" action="/families/{{ family.id }}/invites/{{ inv.id }}/revoke" class="inline"><button class="linklike danger" type="submit">Revoke</button></form>
+          {% endif %}
+        </p>
+      </div>
+      {% endfor %}
+    </section>
+
+    <section class="card">
+      <h2>Members ({{ members.len() }})</h2>
+      <ul class="people">
+        {% for m in members %}
+        <li>
+          <span class="avatar avatar-small">{{ m.display_name.chars().next().unwrap_or('?') }}</span>
+          <span class="grow">{{ m.display_name }}{% if m.user_id == me %} <span class="muted small">(you)</span>{% endif %}{% if m.role == "owner" %} <span class="chip chip-small chip-date">Organizer</span>{% endif %}</span>
+          {% if is_owner && m.user_id != me %}
+          <form method="post" action="/families/{{ family.id }}/members/{{ m.user_id }}/remove" data-confirm="Remove {{ m.display_name }} from {{ family.name }}?"><button class="btn btn-small btn-ghost" type="submit">Remove</button></form>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </section>
+
+    <section class="card">
+      {% if is_owner %}
+      <details>
+        <summary><b>Family settings</b></summary>
+        <form method="post" action="/families/{{ family.id }}/edit" class="stack">
+          <label>Name<input name="name" value="{{ family.name }}" required maxlength="80"></label>
+          <label>Description<input name="description" value="{% if let Some(d) = family.description %}{{ d }}{% endif %}" maxlength="200"></label>
+          <button class="btn btn-small" type="submit">Save</button>
+        </form>
+        <form method="post" action="/families/{{ family.id }}/delete" data-confirm="Delete {{ family.name }}? Lists stay, but stop being shared here."><button class="btn btn-small btn-danger" type="submit">Delete family</button></form>
+      </details>
+      {% endif %}
+      <form method="post" action="/families/{{ family.id }}/leave" data-confirm="Leave {{ family.name }}? Your lists will no longer be shared there."><button class="btn btn-small btn-ghost" type="submit">Leave family</button></form>
+    </section>
+  </aside>
+</div>
+{% endblock %}

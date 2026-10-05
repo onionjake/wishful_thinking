@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Sign in · Wishful Thinking{% endblock %}
+{% block content %}
+<div class="auth-card card">
+  <h1>Welcome back</h1>
+  {% if let Some(fam) = invite_family %}<p class="notice">Sign in to join <b>{{ fam }}</b>.</p>{% endif %}
+  {% if let Some(e) = error %}<p class="form-error">{{ e }}</p>{% endif %}
+  <form method="post" action="/login" class="stack">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label>Email<input type="email" name="email" value="{{ email }}" required autofocus autocomplete="email"></label>
+    <label>Password<input type="password" name="password" required autocomplete="current-password"></label>
+    <button class="btn btn-block" type="submit">Sign in</button>
+  </form>
+  <p class="muted small center">New here? <a href="/signup?next={{ next|urlencode }}">Create an account</a></p>
+</div>
+{% endblock %}

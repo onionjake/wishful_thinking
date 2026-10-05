@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Shopping list · Wishful Thinking{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Your shopping list</h1><p class="muted">Gifts you've said you'll get. Only you can see this page.</p></div>
+  {% if let Some(t) = total_to_buy %}<div class="stat"><span class="muted small">Still to buy</span><b>{{ t }}</b></div>{% endif %}
+</div>
+{% if to_buy.is_empty() && purchased.is_empty() %}
+<div class="empty-card"><p><b>Nothing here yet.</b> Open a family member's list and tap <b>I'll get this</b> on a gift.</p><a class="btn btn-small" href="/">Browse lists</a></div>
+{% endif %}
+{% if !to_buy.is_empty() %}
+<h2 class="section-title">To buy</h2>
+<div class="rows">
+  {% for r in to_buy %}{% include "_reservation_row.html" %}{% endfor %}
+</div>
+{% endif %}
+{% if !purchased.is_empty() %}
+<h2 class="section-title">Bought ✓</h2>
+<div class="rows rows-done">
+  {% for r in purchased %}{% include "_reservation_row.html" %}{% endfor %}
+</div>
+{% endif %}
+{% endblock %}

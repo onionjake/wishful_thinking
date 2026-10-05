@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Your lists · Wishful Thinking{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Hi {{ ctx.user_name() }} 👋</h1>
+    <p class="muted">Your lists, and everything your families are wishing for.</p>
+  </div>
+  <a class="btn" href="/lists/new">+ New list</a>
+</div>
+
+{% if reservation_count > 0 %}
+<a class="banner" href="/reservations">🛍️ You have {{ reservation_count }} gift{% if reservation_count != 1 %}s{% endif %} on your shopping list. <b>View →</b></a>
+{% endif %}
+
+<section>
+  <h2 class="section-title">Your lists</h2>
+  {% if self.active_lists().is_empty() %}
+  <div class="empty-card">
+    <p><b>No lists yet.</b> Make one for yourself, or for someone you shop for — like each of your kids.</p>
+    <a class="btn btn-small" href="/lists/new">Create your first list</a>
+  </div>
+  {% else %}
+  <div class="grid">
+    {% for list in self.active_lists() %}{% let show_sharing = true %}{% include "_list_card.html" %}{% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+<section>
+  <h2 class="section-title">Shared with you</h2>
+  {% if shared_lists.is_empty() %}
+  <div class="empty-card">
+    {% if families.is_empty() %}
+    <p><b>Join or start a family</b> to see the lists your relatives share.</p>
+    <a class="btn btn-small" href="/families">Set up a family</a>
+    {% else %}
+    <p>Nobody in your families has shared a list yet. Nudge them!</p>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="grid">
+    {% for list in shared_lists %}{% let show_sharing = false %}{% include "_list_card.html" %}{% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+{% if !self.archived_lists().is_empty() %}
+<details class="section-collapse">
+  <summary>Archived lists ({{ self.archived_lists().len() }})</summary>
+  <div class="grid">
+    {% for list in self.archived_lists() %}{% let show_sharing = true %}{% include "_list_card.html" %}{% endfor %}
+  </div>
+</details>
+{% endif %}
+{% endblock %}

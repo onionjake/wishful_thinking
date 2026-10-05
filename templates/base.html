@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Wishful Thinking{% endblock %}</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="brand" href="/"><img src="/favicon.svg" alt="" width="28" height="28"> Wishful Thinking</a>
+      {% if let Some(user) = ctx.user %}
+      <nav class="nav">
+        <a href="/" class="{% if ctx.nav_active("/") %}active{% endif %}">Lists</a>
+        <a href="/families" class="{% if ctx.nav_active("/families") %}active{% endif %}">Families</a>
+        <a href="/reservations" class="{% if ctx.nav_active("/reservations") %}active{% endif %}">Shopping</a>
+        <details class="usermenu">
+          <summary><span class="avatar">{{ ctx.initials() }}</span><span class="sr-only">Account menu</span></summary>
+          <div class="menu">
+            <div class="menu-head">{{ user.display_name }}<small>{{ user.email }}</small></div>
+            <a href="/account">Account settings</a>
+            <form method="post" action="/logout"><button class="linklike" type="submit">Sign out</button></form>
+          </div>
+        </details>
+      </nav>
+      {% else %}
+      <nav class="nav">
+        <a href="/login">Sign in</a>
+        <a class="btn btn-small" href="/signup">Create account</a>
+      </nav>
+      {% endif %}
+    </div>
+  </header>
+  {% if let Some(flash) = ctx.flash %}
+  <div class="wrap"><div class="flash flash-{{ flash.kind }}" role="status">{{ flash.message }}</div></div>
+  {% endif %}
+  <main class="wrap">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="footer wrap">
+    <span>Wishful Thinking · keep the surprise, skip the duplicates.</span>
+  </footer>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

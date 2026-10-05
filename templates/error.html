@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ heading }} · Wishful Thinking{% endblock %}
+{% block content %}
+<section class="empty-state">
+  <div class="big-emoji">{% if status == 404 %}🔍{% else if status == 403 %}🔒{% else %}🎈{% endif %}</div>
+  <h1>{{ heading }}</h1>
+  <p class="muted">{{ message }}</p>
+  <a class="btn" href="/">Go home</a>
+</section>
+{% endblock %}

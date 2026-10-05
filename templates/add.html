@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Add to a list · Wishful Thinking{% endblock %}
+{% block content %}
+<div class="narrow">
+  <h1>Add to which list?</h1>
+  {% if !url.is_empty() %}<p class="muted small ellipsis">{{ url }}</p>{% endif %}
+  {% if lists.is_empty() %}
+  <div class="empty-card"><p>You don't have any lists yet.</p><a class="btn btn-small" href="/lists/new">Create a list</a></div>
+  {% else %}
+  <div class="rows">
+    {% for l in lists %}
+    <a class="row-item row-link" href="/lists/{{ l.id }}/items/new?url={{ url|urlencode }}">
+      <span class="grow"><b>{{ l.title }}</b> <span class="muted small">{% if let Some(r) = l.recipient_name %}for {{ r }} · {% endif %}{{ l.item_count }} wishes</span></span>
+      <span>→</span>
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

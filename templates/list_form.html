@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}{% if list.is_some() %}Edit list{% else %}New list{% endif %} · Wishful Thinking{% endblock %}
+{% block content %}
+<div class="narrow">
+  {% if let Some(l) = list %}
+  <p class="crumbs"><a href="/lists/{{ l.id }}">← {{ l.title }}</a></p>
+  <h1>Edit list</h1>
+  {% else %}
+  <p class="crumbs"><a href="/">← Your lists</a></p>
+  <h1>New wish list</h1>
+  <p class="muted">Make one for yourself, or one per kid — you can manage as many lists as you like.</p>
+  {% endif %}
+  {% if let Some(e) = error %}<p class="form-error">{{ e }}</p>{% endif %}
+  <form method="post" action="{% if let Some(l) = list %}/lists/{{ l.id }}/edit{% else %}/lists{% endif %}" class="card stack">
+    <label>List name<input name="title" value="{{ title }}" required maxlength="100" placeholder="e.g. Maya's 7th Birthday"></label>
+    <div class="row">
+      <label>Who is it for? <span class="muted small">(optional)</span><input name="recipient_name" value="{{ recipient_name }}" maxlength="60" placeholder="e.g. Maya"></label>
+      <label>Event date <span class="muted small">(optional)</span><input type="date" name="event_date" value="{{ event_date }}"></label>
+    </div>
+    <label>Notes for gift-givers <span class="muted small">(optional)</span><textarea name="description" rows="3" maxlength="2000" placeholder="Sizes, favourite colours, things to avoid…">{{ description }}</textarea></label>
+    <label class="check">
+      <input type="checkbox" name="show_claims_to_owner" value="1" {% if show_claims_to_owner %}checked{% endif %}>
+      <span><b>Show me what's been reserved</b><br><span class="muted small">Turn this on when you manage a list for someone else (like your child), so you can see who's buying what. Leave it off for your own list to keep gifts a surprise.</span></span>
+    </label>
+    {% if !families.is_empty() %}
+    <fieldset>
+      <legend>Share with families</legend>
+      {% for (fam, on) in families %}
+      <label class="check"><input type="checkbox" name="families" value="{{ fam.id }}" {% if on %}checked{% endif %}> <span>{{ fam.name }} <span class="muted small">· {{ fam.member_count }} members</span></span></label>
+      {% endfor %}
+    </fieldset>
+    {% endif %}
+    <div class="actions">
+      <button class="btn" type="submit">{% if list.is_some() %}Save changes{% else %}Create list{% endif %}</button>
+    </div>
+  </form>
+  {% if let Some(l) = list %}
+  <div class="card danger-zone">
+    <h2>Archive or delete</h2>
+    <p class="muted small">Archived lists are hidden from your families but kept for you. Deleting removes the list and all its items for good.</p>
+    <div class="actions">
+      <form method="post" action="/lists/{{ l.id }}/archive"><button class="btn btn-ghost" type="submit">{% if l.archived %}Restore list{% else %}Archive list{% endif %}</button></form>
+      <form method="post" action="/lists/{{ l.id }}/delete" data-confirm="Delete this list and all its items? This can't be undone."><button class="btn btn-danger" type="submit">Delete list</button></form>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

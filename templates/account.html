@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Account · Wishful Thinking{% endblock %}
+{% block content %}
+<div class="page-head"><h1>Account settings</h1></div>
+{% if let Some(e) = error %}<p class="form-error">{{ e }}</p>{% endif %}
+<div class="two-col">
+  <section class="card">
+    <h2>Profile</h2>
+    <form method="post" action="/account" class="stack">
+      <label>Name<input name="display_name" value="{{ user.display_name }}" required maxlength="60"></label>
+      <label>Email<input type="email" name="email" value="{{ user.email }}" required></label>
+      <button class="btn" type="submit">Save profile</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Password</h2>
+    <form method="post" action="/account/password" class="stack">
+      <label>Current password<input type="password" name="current" required autocomplete="current-password"></label>
+      <label>New password<input type="password" name="new_password" required minlength="8" autocomplete="new-password"></label>
+      <button class="btn btn-ghost" type="submit">Change password</button>
+    </form>
+  </section>
+</div>
+<section class="card">
+  <h2>Add-to-list button for your browser</h2>
+  <p class="muted">Drag this button to your bookmarks bar. When you're on any product page, click it to add the item to one of your lists.</p>
+  <p><a class="btn btn-ghost bookmarklet" href="javascript:void(location.href='{{ ctx.base_url }}/add?url='+encodeURIComponent(location.href))">🎁 Add to Wishful Thinking</a></p>
+</section>
+{% endblock %}
