@@ -30,13 +30,24 @@ async fn invite_family_for(state: &AppState, next: &str) -> Option<String> {
     .flatten()
 }
 
-pub async fn signup_page(State(state): State<AppState>, ctx: Ctx, Query(q): Query<NextQuery>) -> AppResult<Response> {
+pub async fn signup_page(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Query(q): Query<NextQuery>,
+) -> AppResult<Response> {
     let next = util::safe_next(q.next.as_deref());
     if ctx.user.is_some() {
         return Ok(Redirect::to(&next).into_response());
     }
     let invite_family = invite_family_for(&state, &next).await;
-    render(SignupPage { ctx, next, email: String::new(), display_name: String::new(), error: None, invite_family })
+    render(SignupPage {
+        ctx,
+        next,
+        email: String::new(),
+        display_name: String::new(),
+        error: None,
+        invite_family,
+    })
 }
 
 #[derive(Deserialize)]
@@ -47,7 +58,11 @@ pub struct SignupForm {
     next: Option<String>,
 }
 
-pub async fn signup(State(state): State<AppState>, ctx: Ctx, Form(f): Form<SignupForm>) -> AppResult<Response> {
+pub async fn signup(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Form(f): Form<SignupForm>,
+) -> AppResult<Response> {
     let next = util::safe_next(f.next.as_deref());
     let email = f.email.trim().to_lowercase();
     let display_name = f.display_name.trim().to_string();
@@ -61,7 +76,14 @@ pub async fn signup(State(state): State<AppState>, ctx: Ctx, Form(f): Form<Signu
         None
     };
     let render_error = |msg: &str, ctx: Ctx, invite_family| {
-        render(SignupPage { ctx, next: next.clone(), email: email.clone(), display_name: display_name.clone(), error: Some(msg.into()), invite_family })
+        render(SignupPage {
+            ctx,
+            next: next.clone(),
+            email: email.clone(),
+            display_name: display_name.clone(),
+            error: Some(msg.into()),
+            invite_family,
+        })
     };
     if let Some(msg) = error {
         let fam = invite_family_for(&state, &next).await;
@@ -80,23 +102,41 @@ pub async fn signup(State(state): State<AppState>, ctx: Ctx, Form(f): Form<Signu
         Ok(id) => id,
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
             let fam = invite_family_for(&state, &next).await;
-            return render_error("An account with that email already exists — try signing in.", ctx, fam);
+            return render_error(
+                "An account with that email already exists — try signing in.",
+                ctx,
+                fam,
+            );
         }
         Err(e) => return Err(e.into()),
     };
     let cookie = auth::start_session(&state, user_id).await?;
-    let mut resp = redirect_flash(&next, "ok", &format!("Welcome to Wishful Thinking, {display_name}!"));
+    let mut resp = redirect_flash(
+        &next,
+        "ok",
+        &format!("Welcome to Wishful Thinking, {display_name}!"),
+    );
     resp.headers_mut().append(SET_COOKIE, cookie);
     Ok(resp)
 }
 
-pub async fn login_page(State(state): State<AppState>, ctx: Ctx, Query(q): Query<NextQuery>) -> AppResult<Response> {
+pub async fn login_page(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Query(q): Query<NextQuery>,
+) -> AppResult<Response> {
     let next = util::safe_next(q.next.as_deref());
     if ctx.user.is_some() {
         return Ok(Redirect::to(&next).into_response());
     }
     let invite_family = invite_family_for(&state, &next).await;
-    render(LoginPage { ctx, next, email: String::new(), error: None, invite_family })
+    render(LoginPage {
+        ctx,
+        next,
+        email: String::new(),
+        error: None,
+        invite_family,
+    })
 }
 
 #[derive(Deserialize)]
@@ -106,13 +146,18 @@ pub struct LoginForm {
     next: Option<String>,
 }
 
-pub async fn login(State(state): State<AppState>, ctx: Ctx, Form(f): Form<LoginForm>) -> AppResult<Response> {
+pub async fn login(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Form(f): Form<LoginForm>,
+) -> AppResult<Response> {
     let next = util::safe_next(f.next.as_deref());
     let email = f.email.trim().to_lowercase();
-    let row: Option<(i64, String)> = sqlx::query_as("SELECT id, password_hash FROM users WHERE email = ?")
-        .bind(&email)
-        .fetch_optional(&state.db)
-        .await?;
+    let row: Option<(i64, String)> =
+        sqlx::query_as("SELECT id, password_hash FROM users WHERE email = ?")
+            .bind(&email)
+            .fetch_optional(&state.db)
+            .await?;
     let ok = match &row {
         Some((_, hash)) => auth::verify_password(&f.password, hash).await,
         None => {
@@ -123,7 +168,13 @@ pub async fn login(State(state): State<AppState>, ctx: Ctx, Form(f): Form<LoginF
     };
     if !ok {
         let invite_family = invite_family_for(&state, &next).await;
-        return render(LoginPage { ctx, next, email, error: Some("That email and password don't match.".into()), invite_family });
+        return render(LoginPage {
+            ctx,
+            next,
+            email,
+            error: Some("That email and password don't match.".into()),
+            invite_family,
+        });
     }
     let cookie = auth::start_session(&state, row.unwrap().0).await?;
     let mut resp = Redirect::to(&next).into_response();
@@ -140,7 +191,11 @@ pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> AppRes
 
 pub async fn account_page(ctx: Ctx) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
-    render(AccountPage { ctx, user, error: None })
+    render(AccountPage {
+        ctx,
+        user,
+        error: None,
+    })
 }
 
 #[derive(Deserialize)]
@@ -149,12 +204,20 @@ pub struct AccountForm {
     email: String,
 }
 
-pub async fn update_account(State(state): State<AppState>, ctx: Ctx, Form(f): Form<AccountForm>) -> AppResult<Response> {
+pub async fn update_account(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Form(f): Form<AccountForm>,
+) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
     let name = f.display_name.trim();
     let email = f.email.trim().to_lowercase();
     if name.is_empty() || !email.contains('@') {
-        return render(AccountPage { ctx, user, error: Some("Name and a valid email are required.".into()) });
+        return render(AccountPage {
+            ctx,
+            user,
+            error: Some("Name and a valid email are required.".into()),
+        });
     }
     let res = sqlx::query("UPDATE users SET display_name = ?, email = ? WHERE id = ?")
         .bind(name)
@@ -164,9 +227,11 @@ pub async fn update_account(State(state): State<AppState>, ctx: Ctx, Form(f): Fo
         .await;
     match res {
         Ok(_) => Ok(redirect_flash("/account", "ok", "Profile updated.")),
-        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
-            render(AccountPage { ctx, user, error: Some("Another account already uses that email.".into()) })
-        }
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => render(AccountPage {
+            ctx,
+            user,
+            error: Some("Another account already uses that email.".into()),
+        }),
         Err(e) => Err(e.into()),
     }
 }
@@ -177,17 +242,29 @@ pub struct PasswordForm {
     new_password: String,
 }
 
-pub async fn change_password(State(state): State<AppState>, ctx: Ctx, Form(f): Form<PasswordForm>) -> AppResult<Response> {
+pub async fn change_password(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Form(f): Form<PasswordForm>,
+) -> AppResult<Response> {
     let user: User = ctx.require_user()?.clone();
     let hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = ?")
         .bind(user.id)
         .fetch_one(&state.db)
         .await?;
     if !auth::verify_password(&f.current, &hash).await {
-        return render(AccountPage { ctx, user, error: Some("Your current password is incorrect.".into()) });
+        return render(AccountPage {
+            ctx,
+            user,
+            error: Some("Your current password is incorrect.".into()),
+        });
     }
     if f.new_password.chars().count() < 8 {
-        return render(AccountPage { ctx, user, error: Some("New passwords need at least 8 characters.".into()) });
+        return render(AccountPage {
+            ctx,
+            user,
+            error: Some("New passwords need at least 8 characters.".into()),
+        });
     }
     let new_hash = auth::hash_password(&f.new_password).await?;
     sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")

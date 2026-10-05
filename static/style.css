@@ -80,7 +80,7 @@ img { max-width: 100%; }
 .avatar { display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: var(--brand); color: #fff; font-weight: 800; font-size: .85rem; }
 .avatar-small { width: 28px; height: 28px; font-size: .8rem; flex: none; }
 
-main { padding-top: 24px; padding-bottom: 48px; min-height: calc(100vh - 140px); }
+main.wrap { padding-top: 28px; padding-bottom: 48px; min-height: calc(100vh - 140px); }
 .footer { color: var(--muted); font-size: .85rem; padding-top: 16px; padding-bottom: 32px; border-top: 1px solid var(--line); }
 
 /* Buttons */
@@ -144,6 +144,7 @@ section > .section-title:first-child { margin-top: 8px; }
 .hint { background: var(--surface-2); padding: 10px 14px; border-radius: 10px; font-size: .9rem; }
 
 /* Forms */
+label > span .small { font-weight: 400; }
 label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; font-size: .95rem; }
 input, select, textarea { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; width: 100%; font-weight: 400; }
 input:focus, select:focus, textarea:focus { outline: 2px solid color-mix(in srgb, var(--brand) 50%, transparent); outline-offset: 1px; border-color: var(--brand); }
@@ -181,7 +182,7 @@ legend { font-weight: 700; padding: 0 6px; }
 .list-card:hover { text-decoration: none; transform: translateY(-2px); box-shadow: 0 8px 24px rgba(60, 30, 20, .1); }
 .list-card.archived { opacity: .7; }
 .thumbs { height: 120px; background: var(--surface-2); display: grid; gap: 2px; overflow: hidden; }
-.thumbs img { width: 100%; height: 100%; object-fit: contain; background: #fff; min-height: 0; }
+.thumbs img { width: 100%; height: 100%; object-fit: cover; min-height: 0; min-width: 0; }
 .thumbs-1 { grid-template-columns: 1fr; }
 .thumbs-2 { grid-template-columns: 1fr 1fr; }
 .thumbs-3 { grid-template-columns: 1fr 1fr 1fr; }
@@ -202,17 +203,19 @@ legend { font-weight: 700; padding: 0 6px; }
 .toolbar { display: flex; justify-content: space-between; align-items: center; margin: 12px 0; gap: 12px; }
 .sort-form label { flex-direction: row; align-items: center; gap: 8px; font-weight: 400; }
 .sort-form select { width: auto; padding: 6px 10px; }
-.items { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+.items { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 16px; }
 .item { display: flex; gap: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow); scroll-margin-top: 80px; }
 .item:target { outline: 3px solid var(--gold); }
 .item.taken .item-img img, .item.received .item-img img { filter: grayscale(.6); opacity: .7; }
-.item-img { width: 112px; height: 112px; flex: none; border-radius: 12px; background: #fff; border: 1px solid var(--line); display: grid; place-items: center; overflow: hidden; font-size: 2.4rem; }
+.item-img { width: 132px; height: 132px; flex: none; border-radius: 12px; background: #fff; border: 1px solid var(--line); display: grid; place-items: center; overflow: hidden; font-size: 2.4rem; }
 .item-img img { width: 100%; height: 100%; object-fit: contain; }
 .item-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .item-top { display: flex; gap: 6px; align-items: center; }
 .item h3 { margin: 0; font-size: 1rem; overflow-wrap: anywhere; }
 .item h3 a { color: var(--ink); }
-.item-meta { display: flex; gap: 10px; align-items: baseline; margin: 0; color: var(--muted); font-size: .9rem; }
+.item-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin: 0; color: var(--muted); font-size: .9rem; }
+.store-link { color: var(--muted); }
+.store-link:hover { color: var(--brand); }
 .price { color: var(--ink); font-size: 1.05rem; }
 .item-notes { font-size: .9rem; color: var(--muted); margin: 0; white-space: pre-line; }
 .claims { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
@@ -280,3 +283,6 @@ legend { font-weight: 700; padding: 0 6px; }
   .nav > a { padding: 6px 8px; font-size: .9rem; }
   .mock-card:nth-child(2) { margin-left: 0; }
 }
+.copy-row + .actions { margin-top: 12px; }
+.card details form, .card details + form { margin-top: 12px; }
+.card details summary { cursor: pointer; }

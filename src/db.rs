@@ -39,7 +39,10 @@ pub struct User {
 
 impl User {
     pub fn first_name(&self) -> &str {
-        self.display_name.split_whitespace().next().unwrap_or(&self.display_name)
+        self.display_name
+            .split_whitespace()
+            .next()
+            .unwrap_or(&self.display_name)
     }
 }
 
@@ -65,7 +68,9 @@ pub trait EventDate {
         self.event_date_str().map(util::pretty_date)
     }
     fn event_is_past(&self) -> bool {
-        self.event_date_str().and_then(util::parse_date).is_some_and(|d| d < util::today())
+        self.event_date_str()
+            .and_then(util::parse_date)
+            .is_some_and(|d| d < util::today())
     }
 }
 
@@ -101,7 +106,10 @@ impl EventDate for ListSummary {
 
 impl ListSummary {
     pub fn preview_images(&self) -> Vec<&str> {
-        self.images.as_deref().map(|s| s.lines().filter(|l| !l.is_empty()).take(4).collect()).unwrap_or_default()
+        self.images
+            .as_deref()
+            .map(|s| s.lines().filter(|l| !l.is_empty()).take(4).collect())
+            .unwrap_or_default()
     }
     pub fn is_shared(&self) -> bool {
         self.public_token.is_some() || self.family_names.is_some()
@@ -177,7 +185,9 @@ impl Item {
         self.price_cents.map(|c| price::format(c, &self.currency))
     }
     pub fn price_input(&self) -> String {
-        self.price_cents.map(|c| price::to_input(c, &self.currency)).unwrap_or_default()
+        self.price_cents
+            .map(|c| price::to_input(c, &self.currency))
+            .unwrap_or_default()
     }
     pub fn priority_label(&self) -> &'static str {
         priority_label(self.priority)
@@ -192,7 +202,10 @@ impl Item {
         self.url
             .as_deref()
             .and_then(|u| url::Url::parse(u).ok())
-            .and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string()))
+            .and_then(|u| {
+                u.host_str()
+                    .map(|h| h.trim_start_matches("www.").to_string())
+            })
     }
 }
 
@@ -204,16 +217,19 @@ pub fn priority_label(p: i64) -> &'static str {
     }
 }
 
-pub const ITEM_SELECT: &str = "SELECT i.id, i.wishlist_id, i.title, i.url, i.image_url, i.price_cents, i.currency, i.store,
+pub const ITEM_SELECT: &str =
+    "SELECT i.id, i.wishlist_id, i.title, i.url, i.image_url, i.price_cents, i.currency, i.store,
     i.notes, i.priority, i.quantity, i.received, i.import_source,
     COALESCE((SELECT SUM(c.quantity) FROM claims c WHERE c.item_id = i.id), 0) AS claimed_qty
   FROM items i";
 
 pub async fn items_for_list(db: &Db, list_id: i64) -> sqlx::Result<Vec<Item>> {
-    sqlx::query_as::<_, Item>(&format!("{ITEM_SELECT} WHERE i.wishlist_id = ? ORDER BY i.received, i.priority, i.id"))
-        .bind(list_id)
-        .fetch_all(db)
-        .await
+    sqlx::query_as::<_, Item>(&format!(
+        "{ITEM_SELECT} WHERE i.wishlist_id = ? ORDER BY i.received, i.priority, i.id"
+    ))
+    .bind(list_id)
+    .fetch_all(db)
+    .await
 }
 
 pub async fn get_item(db: &Db, item_id: i64) -> sqlx::Result<Option<Item>> {
@@ -327,22 +343,27 @@ impl Access {
 }
 
 pub async fn get_list(db: &Db, list_id: i64) -> sqlx::Result<Option<Wishlist>> {
-    sqlx::query_as::<_, Wishlist>(&format!("SELECT {WISHLIST_COLS} FROM wishlists WHERE id = ?"))
-        .bind(list_id)
-        .fetch_optional(db)
-        .await
+    sqlx::query_as::<_, Wishlist>(&format!(
+        "SELECT {WISHLIST_COLS} FROM wishlists WHERE id = ?"
+    ))
+    .bind(list_id)
+    .fetch_optional(db)
+    .await
 }
 
 pub async fn list_access(db: &Db, list: &Wishlist, user_id: Option<i64>) -> sqlx::Result<Access> {
-    let Some(uid) = user_id else { return Ok(Access::None) };
+    let Some(uid) = user_id else {
+        return Ok(Access::None);
+    };
     if list.owner_id == uid {
         return Ok(Access::Owner);
     }
-    let manager: Option<i64> = sqlx::query_scalar("SELECT 1 FROM wishlist_managers WHERE wishlist_id = ? AND user_id = ?")
-        .bind(list.id)
-        .bind(uid)
-        .fetch_optional(db)
-        .await?;
+    let manager: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM wishlist_managers WHERE wishlist_id = ? AND user_id = ?")
+            .bind(list.id)
+            .bind(uid)
+            .fetch_optional(db)
+            .await?;
     if manager.is_some() {
         return Ok(Access::Manager);
     }
@@ -354,5 +375,9 @@ pub async fn list_access(db: &Db, list: &Wishlist, user_id: Option<i64>) -> sqlx
     .bind(uid)
     .fetch_optional(db)
     .await?;
-    Ok(if family.is_some() { Access::Family } else { Access::None })
+    Ok(if family.is_some() {
+        Access::Family
+    } else {
+        Access::None
+    })
 }

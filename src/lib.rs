@@ -27,12 +27,20 @@ impl AppState {
         let db = db::connect(&config.database_url).await?;
         let llm = config.llm.as_ref().map(|c| c.build());
         let importer = importer::Importer::new(llm, config.llm_mode, config.allow_private_fetch);
-        Ok(AppState { db, config: Arc::new(config), importer })
+        Ok(AppState {
+            db,
+            config: Arc::new(config),
+            importer,
+        })
     }
 
     /// Build share links such as `https://host/p/<token>`.
     pub fn absolute(&self, base_url: &str, path: &str) -> String {
-        format!("{}{}", self.config.base_url.as_deref().unwrap_or(base_url), path)
+        format!(
+            "{}{}",
+            self.config.base_url.as_deref().unwrap_or(base_url),
+            path
+        )
     }
 }
 

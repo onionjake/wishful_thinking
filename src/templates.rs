@@ -19,18 +19,31 @@ pub struct Ctx {
 
 impl Ctx {
     pub fn anonymous() -> Self {
-        Ctx { path: "/".into(), ..Default::default() }
+        Ctx {
+            path: "/".into(),
+            ..Default::default()
+        }
     }
     pub fn is_signed_in(&self) -> bool {
         self.user.is_some()
     }
     pub fn user_name(&self) -> &str {
-        self.user.as_ref().map(|u| u.display_name.as_str()).unwrap_or("")
+        self.user
+            .as_ref()
+            .map(|u| u.display_name.as_str())
+            .unwrap_or("")
     }
     pub fn initials(&self) -> String {
         self.user
             .as_ref()
-            .map(|u| u.display_name.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase())
+            .map(|u| {
+                u.display_name
+                    .split_whitespace()
+                    .filter_map(|w| w.chars().next())
+                    .take(2)
+                    .collect::<String>()
+                    .to_uppercase()
+            })
             .unwrap_or_default()
     }
     pub fn is_user(&self, id: &i64) -> bool {
@@ -56,10 +69,16 @@ impl Flash {
         crate::util::urlencode(&format!("{}|{}", self.kind, self.message))
     }
     pub fn decode(raw: &str) -> Option<Flash> {
-        let decoded: String = url::form_urlencoded::parse(format!("v={raw}").as_bytes()).next()?.1.into_owned();
+        let decoded: String = url::form_urlencoded::parse(format!("v={raw}").as_bytes())
+            .next()?
+            .1
+            .into_owned();
         let (kind, message) = decoded.split_once('|')?;
         let kind = if kind == "error" { "error" } else { "ok" };
-        Some(Flash { kind: kind.into(), message: message.chars().take(300).collect() })
+        Some(Flash {
+            kind: kind.into(),
+            message: message.chars().take(300).collect(),
+        })
     }
 }
 
@@ -273,13 +292,18 @@ impl ItemFormValues {
 
 impl ItemFormPage {
     pub fn currencies(&self) -> Vec<&'static str> {
-        vec!["USD", "EUR", "GBP", "CAD", "AUD", "NZD", "JPY", "CHF", "SEK", "NOK", "DKK", "INR", "MXN", "BRL"]
+        vec![
+            "USD", "EUR", "GBP", "CAD", "AUD", "NZD", "JPY", "CHF", "SEK", "NOK", "DKK", "INR",
+            "MXN", "BRL",
+        ]
     }
     pub fn currency_known(&self) -> bool {
         self.currencies().contains(&self.form.currency.as_str())
     }
     pub fn import_fields_found(&self) -> Vec<&'static str> {
-        let Some(imp) = &self.import else { return vec![] };
+        let Some(imp) = &self.import else {
+            return vec![];
+        };
         let mut found = vec![];
         if imp.info.title.is_some() {
             found.push("name");

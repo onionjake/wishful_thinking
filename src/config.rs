@@ -19,7 +19,10 @@ pub struct Config {
 }
 
 fn var(name: &str) -> Option<String> {
-    env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+    env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 fn flag(name: &str) -> bool {

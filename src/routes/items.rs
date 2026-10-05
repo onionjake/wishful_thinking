@@ -10,7 +10,9 @@ use crate::db::{self, Access, Item, Wishlist};
 use crate::error::{AppError, AppResult};
 use crate::importer::{price, ImportOutcome};
 use crate::routes::lists::editable_list;
-use crate::templates::{render, AddPage, Ctx, ItemFormPage, ItemFormValues, ReservationView, ReservationsPage};
+use crate::templates::{
+    render, AddPage, Ctx, ItemFormPage, ItemFormValues, ReservationView, ReservationsPage,
+};
 use crate::util;
 use crate::AppState;
 
@@ -28,10 +30,19 @@ fn values_from_import(imp: &ImportOutcome) -> ItemFormValues {
     ItemFormValues {
         url: imp.url.clone(),
         title: imp.info.title.clone().unwrap_or_default(),
-        price: imp.info.price_cents.map(|c| price::to_input(c, &currency)).unwrap_or_default(),
+        price: imp
+            .info
+            .price_cents
+            .map(|c| price::to_input(c, &currency))
+            .unwrap_or_default(),
         currency,
         image_url: imp.info.image_url.clone().unwrap_or_default(),
-        store: imp.info.store.clone().or_else(|| imp.info.brand.clone()).unwrap_or_default(),
+        store: imp
+            .info
+            .store
+            .clone()
+            .or_else(|| imp.info.brand.clone())
+            .unwrap_or_default(),
         notes: String::new(),
         priority: 2,
         quantity: 1,
@@ -66,7 +77,12 @@ pub async fn new_item_page(
     Query(q): Query<NewItemQuery>,
 ) -> AppResult<Response> {
     let (list, _, user) = editable_list(&state, &ctx, list_id).await?;
-    let mut form = ItemFormValues { priority: 2, quantity: 1, currency: "USD".into(), ..Default::default() };
+    let mut form = ItemFormValues {
+        priority: 2,
+        quantity: 1,
+        currency: "USD".into(),
+        ..Default::default()
+    };
     let mut import = None;
     let mut import_error = None;
     if let Some(url) = util::non_empty(q.url.as_deref()) {
@@ -82,7 +98,16 @@ pub async fn new_item_page(
         }
     }
     let other_lists = other_lists(&state, user.id, list.id).await?;
-    render(ItemFormPage { ctx, list, item_id: None, form, import, import_error, error: None, other_lists })
+    render(ItemFormPage {
+        ctx,
+        list,
+        item_id: None,
+        form,
+        import,
+        import_error,
+        error: None,
+        other_lists,
+    })
 }
 
 #[derive(Deserialize)]
@@ -116,9 +141,17 @@ fn http_url(raw: Option<&str>) -> Result<Option<String>, ()> {
     match util::non_empty(raw) {
         None => Ok(None),
         Some(u) => {
-            let candidate = if u.contains("://") { u } else { format!("https://{u}") };
+            let candidate = if u.contains("://") {
+                u
+            } else {
+                format!("https://{u}")
+            };
             match url::Url::parse(&candidate) {
-                Ok(parsed) if matches!(parsed.scheme(), "http" | "https") && parsed.host().is_some() => Ok(Some(parsed.to_string())),
+                Ok(parsed)
+                    if matches!(parsed.scheme(), "http" | "https") && parsed.host().is_some() =>
+                {
+                    Ok(Some(parsed.to_string()))
+                }
                 _ => Err(()),
             }
         }
@@ -146,8 +179,11 @@ impl ItemForm {
         if title.is_empty() || title.chars().count() > 200 {
             return Err("Every wish needs a name (up to 200 characters).".into());
         }
-        let url = http_url(self.url.as_deref()).map_err(|_| "The link should be a web address starting with http:// or https://".to_string())?;
-        let image_url = http_url(self.image_url.as_deref()).map_err(|_| "The picture should be a web address.".to_string())?;
+        let url = http_url(self.url.as_deref()).map_err(|_| {
+            "The link should be a web address starting with http:// or https://".to_string()
+        })?;
+        let image_url = http_url(self.image_url.as_deref())
+            .map_err(|_| "The picture should be a web address.".to_string())?;
         let currency = self
             .currency
             .as_deref()
@@ -157,7 +193,7 @@ impl ItemForm {
             None => None,
             Some(p) => Some(
                 price::parse_amount(&p, &currency)
-                    .filter(|c| *c >= 0 && *c < 100_000_000_00)
+                    .filter(|c| *c >= 0 && *c < 10_000_000_000)
                     .ok_or_else(|| "The price should be a number like 24.99.".to_string())?,
             ),
         };
@@ -171,7 +207,8 @@ impl ItemForm {
             notes: util::non_empty(self.notes.as_deref()).map(|s| s.chars().take(2000).collect()),
             priority: self.priority.unwrap_or(2).clamp(1, 3),
             quantity: self.quantity.unwrap_or(1).clamp(1, 99),
-            import_source: util::non_empty(self.import_source.as_deref()).map(|s| s.chars().take(40).collect()),
+            import_source: util::non_empty(self.import_source.as_deref())
+                .map(|s| s.chars().take(40).collect()),
         })
     }
 }
@@ -187,7 +224,16 @@ pub async fn create_item(
         Ok(c) => c,
         Err(msg) => {
             let other_lists = other_lists(&state, user.id, list.id).await?;
-            return render(ItemFormPage { ctx, list, item_id: None, form: f.values(), import: None, import_error: None, error: Some(msg), other_lists });
+            return render(ItemFormPage {
+                ctx,
+                list,
+                item_id: None,
+                form: f.values(),
+                import: None,
+                import_error: None,
+                error: Some(msg),
+                other_lists,
+            });
         }
     };
     sqlx::query(
@@ -207,18 +253,35 @@ pub async fn create_item(
     .bind(&clean.import_source)
     .execute(&state.db)
     .await?;
-    sqlx::query("UPDATE wishlists SET updated_at = datetime('now') WHERE id = ?").bind(list_id).execute(&state.db).await?;
-    Ok(redirect_flash(&format!("/lists/{list_id}"), "ok", &format!("Added “{}”.", clean.title)))
+    sqlx::query("UPDATE wishlists SET updated_at = datetime('now') WHERE id = ?")
+        .bind(list_id)
+        .execute(&state.db)
+        .await?;
+    Ok(redirect_flash(
+        &format!("/lists/{list_id}"),
+        "ok",
+        &format!("Added “{}”.", clean.title),
+    ))
 }
 
 /// Load an item and its list, requiring edit rights.
-async fn editable_item(state: &AppState, ctx: &Ctx, item_id: i64) -> AppResult<(Item, Wishlist, i64)> {
-    let item = db::get_item(&state.db, item_id).await?.ok_or(AppError::NotFound)?;
+async fn editable_item(
+    state: &AppState,
+    ctx: &Ctx,
+    item_id: i64,
+) -> AppResult<(Item, Wishlist, i64)> {
+    let item = db::get_item(&state.db, item_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
     let (list, _, user) = editable_list(state, ctx, item.wishlist_id).await?;
     Ok((item, list, user.id))
 }
 
-pub async fn edit_item_page(State(state): State<AppState>, ctx: Ctx, Path(id): Path<i64>) -> AppResult<Response> {
+pub async fn edit_item_page(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+) -> AppResult<Response> {
     let (item, list, uid) = editable_item(&state, &ctx, id).await?;
     let other_lists = other_lists(&state, uid, list.id).await?;
     render(ItemFormPage {
@@ -233,13 +296,27 @@ pub async fn edit_item_page(State(state): State<AppState>, ctx: Ctx, Path(id): P
     })
 }
 
-pub async fn update_item(State(state): State<AppState>, ctx: Ctx, Path(id): Path<i64>, Form(f): Form<ItemForm>) -> AppResult<Response> {
+pub async fn update_item(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+    Form(f): Form<ItemForm>,
+) -> AppResult<Response> {
     let (item, list, uid) = editable_item(&state, &ctx, id).await?;
     let clean = match f.validate() {
         Ok(c) => c,
         Err(msg) => {
             let other_lists = other_lists(&state, uid, list.id).await?;
-            return render(ItemFormPage { ctx, list, item_id: Some(item.id), form: f.values(), import: None, import_error: None, error: Some(msg), other_lists });
+            return render(ItemFormPage {
+                ctx,
+                list,
+                item_id: Some(item.id),
+                form: f.values(),
+                import: None,
+                import_error: None,
+                error: Some(msg),
+                other_lists,
+            });
         }
     };
     sqlx::query(
@@ -260,19 +337,46 @@ pub async fn update_item(State(state): State<AppState>, ctx: Ctx, Path(id): Path
     .bind(id)
     .execute(&state.db)
     .await?;
-    Ok(redirect_flash(&format!("/lists/{}#item-{id}", list.id), "ok", "Saved."))
+    Ok(redirect_flash(
+        &format!("/lists/{}#item-{id}", list.id),
+        "ok",
+        "Saved.",
+    ))
 }
 
-pub async fn delete_item(State(state): State<AppState>, ctx: Ctx, Path(id): Path<i64>) -> AppResult<Response> {
+pub async fn delete_item(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+) -> AppResult<Response> {
     let (item, list, _) = editable_item(&state, &ctx, id).await?;
-    sqlx::query("DELETE FROM items WHERE id = ?").bind(id).execute(&state.db).await?;
-    Ok(redirect_flash(&format!("/lists/{}", list.id), "ok", &format!("Removed “{}”.", item.title)))
+    sqlx::query("DELETE FROM items WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    Ok(redirect_flash(
+        &format!("/lists/{}", list.id),
+        "ok",
+        &format!("Removed “{}”.", item.title),
+    ))
 }
 
-pub async fn toggle_received(State(state): State<AppState>, ctx: Ctx, Path(id): Path<i64>) -> AppResult<Response> {
+pub async fn toggle_received(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+) -> AppResult<Response> {
     let (item, list, _) = editable_item(&state, &ctx, id).await?;
-    sqlx::query("UPDATE items SET received = ? WHERE id = ?").bind(!item.received).bind(id).execute(&state.db).await?;
-    let msg = if item.received { "Moved back to the wish list." } else { "Marked as received 🎉" };
+    sqlx::query("UPDATE items SET received = ? WHERE id = ?")
+        .bind(!item.received)
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    let msg = if item.received {
+        "Moved back to the wish list."
+    } else {
+        "Marked as received 🎉"
+    };
     Ok(redirect_flash(&format!("/lists/{}", list.id), "ok", msg))
 }
 
@@ -282,14 +386,30 @@ pub struct CopyForm {
     mode: String,
 }
 
-pub async fn copy_item(State(state): State<AppState>, ctx: Ctx, Path(id): Path<i64>, Form(f): Form<CopyForm>) -> AppResult<Response> {
+pub async fn copy_item(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+    Form(f): Form<CopyForm>,
+) -> AppResult<Response> {
     let (item, list, _) = editable_item(&state, &ctx, id).await?;
     let (target, _, _) = editable_list(&state, &ctx, f.target_list).await?;
     if f.mode == "move" {
-        sqlx::query("UPDATE items SET wishlist_id = ? WHERE id = ?").bind(target.id).bind(id).execute(&state.db).await?;
+        sqlx::query("UPDATE items SET wishlist_id = ? WHERE id = ?")
+            .bind(target.id)
+            .bind(id)
+            .execute(&state.db)
+            .await?;
         // Reservations were made against the old list's audience; clear them on move.
-        sqlx::query("DELETE FROM claims WHERE item_id = ?").bind(id).execute(&state.db).await?;
-        return Ok(redirect_flash(&format!("/lists/{}", list.id), "ok", &format!("Moved to “{}”.", target.title)));
+        sqlx::query("DELETE FROM claims WHERE item_id = ?")
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+        return Ok(redirect_flash(
+            &format!("/lists/{}", list.id),
+            "ok",
+            &format!("Moved to “{}”.", target.title),
+        ));
     }
     sqlx::query(
         "INSERT INTO items (wishlist_id, title, url, image_url, price_cents, currency, store, notes, priority, quantity, import_source)
@@ -299,7 +419,11 @@ pub async fn copy_item(State(state): State<AppState>, ctx: Ctx, Path(id): Path<i
     .bind(item.id)
     .execute(&state.db)
     .await?;
-    Ok(redirect_flash(&format!("/lists/{}", list.id), "ok", &format!("Copied to “{}”.", target.title)))
+    Ok(redirect_flash(
+        &format!("/lists/{}", list.id),
+        "ok",
+        &format!("Copied to “{}”.", target.title),
+    ))
 }
 
 // ---------------------------------------------------------------- reservations
@@ -316,7 +440,12 @@ enum Claimer {
 }
 
 /// Insert a reservation if the item still has unreserved quantity.
-async fn insert_claim(state: &AppState, item_id: i64, claimer: &Claimer, qty: Option<i64>) -> AppResult<Result<(), &'static str>> {
+async fn insert_claim(
+    state: &AppState,
+    item_id: i64,
+    claimer: &Claimer,
+    qty: Option<i64>,
+) -> AppResult<Result<(), &'static str>> {
     let mut tx = state.db.begin().await?;
     let row: Option<(i64, i64, bool)> = sqlx::query_as(
         "SELECT i.quantity, COALESCE((SELECT SUM(quantity) FROM claims WHERE item_id = i.id), 0), i.received FROM items i WHERE i.id = ?",
@@ -324,7 +453,9 @@ async fn insert_claim(state: &AppState, item_id: i64, claimer: &Claimer, qty: Op
     .bind(item_id)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((quantity, claimed, received)) = row else { return Err(AppError::NotFound) };
+    let Some((quantity, claimed, received)) = row else {
+        return Err(AppError::NotFound);
+    };
     if received {
         return Ok(Err("That gift has already been received."));
     }
@@ -334,19 +465,27 @@ async fn insert_claim(state: &AppState, item_id: i64, claimer: &Claimer, qty: Op
     }
     let qty = qty.unwrap_or(1).clamp(1, remaining);
     let existing: Option<i64> = match claimer {
-        Claimer::User(uid) => sqlx::query_scalar("SELECT id FROM claims WHERE item_id = ? AND user_id = ?")
-            .bind(item_id)
-            .bind(uid)
-            .fetch_optional(&mut *tx)
-            .await?,
-        Claimer::Guest { token, .. } => sqlx::query_scalar("SELECT id FROM claims WHERE item_id = ? AND guest_token = ?")
-            .bind(item_id)
-            .bind(token)
-            .fetch_optional(&mut *tx)
-            .await?,
+        Claimer::User(uid) => {
+            sqlx::query_scalar("SELECT id FROM claims WHERE item_id = ? AND user_id = ?")
+                .bind(item_id)
+                .bind(uid)
+                .fetch_optional(&mut *tx)
+                .await?
+        }
+        Claimer::Guest { token, .. } => {
+            sqlx::query_scalar("SELECT id FROM claims WHERE item_id = ? AND guest_token = ?")
+                .bind(item_id)
+                .bind(token)
+                .fetch_optional(&mut *tx)
+                .await?
+        }
     };
     if let Some(claim_id) = existing {
-        sqlx::query("UPDATE claims SET quantity = quantity + ? WHERE id = ?").bind(qty).bind(claim_id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE claims SET quantity = quantity + ? WHERE id = ?")
+            .bind(qty)
+            .bind(claim_id)
+            .execute(&mut *tx)
+            .await?;
     } else {
         match claimer {
             Claimer::User(uid) => {
@@ -381,27 +520,52 @@ fn may_claim(list: &Wishlist, access: Access) -> bool {
     }
 }
 
-pub async fn claim_item(State(state): State<AppState>, ctx: Ctx, Path(id): Path<i64>, Form(f): Form<ClaimForm>) -> AppResult<Response> {
+pub async fn claim_item(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+    Form(f): Form<ClaimForm>,
+) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
-    let item = db::get_item(&state.db, id).await?.ok_or(AppError::NotFound)?;
-    let list = db::get_list(&state.db, item.wishlist_id).await?.ok_or(AppError::NotFound)?;
+    let item = db::get_item(&state.db, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let list = db::get_list(&state.db, item.wishlist_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
     let access = db::list_access(&state.db, &list, Some(user.id)).await?;
     if !may_claim(&list, access) {
-        return Err(if access.can_view() { AppError::Forbidden } else { AppError::NotFound });
+        return Err(if access.can_view() {
+            AppError::Forbidden
+        } else {
+            AppError::NotFound
+        });
     }
     let back = format!("/lists/{}#item-{id}", list.id);
-    Ok(match insert_claim(&state, id, &Claimer::User(user.id), f.quantity).await? {
-        Ok(()) => redirect_flash(&back, "ok", &format!("You're getting “{}”. It's on your shopping list.", item.title)),
-        Err(msg) => redirect_flash(&back, "error", msg),
-    })
+    Ok(
+        match insert_claim(&state, id, &Claimer::User(user.id), f.quantity).await? {
+            Ok(()) => redirect_flash(
+                &back,
+                "ok",
+                &format!(
+                    "You're getting “{}”. It's on your shopping list.",
+                    item.title
+                ),
+            ),
+            Err(msg) => redirect_flash(&back, "error", msg),
+        },
+    )
 }
 
 async fn public_list_by_token(state: &AppState, token: &str) -> AppResult<Wishlist> {
-    sqlx::query_as::<_, Wishlist>(&format!("SELECT {} FROM wishlists WHERE public_token = ? AND archived = 0", db::WISHLIST_COLS))
-        .bind(token)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or(AppError::NotFound)
+    sqlx::query_as::<_, Wishlist>(&format!(
+        "SELECT {} FROM wishlists WHERE public_token = ? AND archived = 0",
+        db::WISHLIST_COLS
+    ))
+    .bind(token)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AppError::NotFound)
 }
 
 pub async fn public_claim(
@@ -412,35 +576,61 @@ pub async fn public_claim(
     Form(f): Form<ClaimForm>,
 ) -> AppResult<Response> {
     let list = public_list_by_token(&state, &token).await?;
-    let item = db::get_item(&state.db, id).await?.filter(|i| i.wishlist_id == list.id).ok_or(AppError::NotFound)?;
+    let item = db::get_item(&state.db, id)
+        .await?
+        .filter(|i| i.wishlist_id == list.id)
+        .ok_or(AppError::NotFound)?;
     let back = format!("/p/{token}#item-{id}");
     let mut set_cookie = None;
     let claimer = match &ctx.user {
         Some(user) => {
             let access = db::list_access(&state.db, &list, Some(user.id)).await?;
             if access.can_edit() && !list.show_claims_to_owner {
-                return Ok(redirect_flash(&back, "error", "You manage this list, so reservations are hidden from you."));
+                return Ok(redirect_flash(
+                    &back,
+                    "error",
+                    "You manage this list, so reservations are hidden from you.",
+                ));
             }
             Claimer::User(user.id)
         }
         None => {
-            let Some(name) = util::non_empty(f.guest_name.as_deref()).map(|n| n.chars().take(60).collect::<String>()) else {
-                return Ok(redirect_flash(&back, "error", "Please enter your name so others know this gift is taken."));
+            let Some(name) = util::non_empty(f.guest_name.as_deref())
+                .map(|n| n.chars().take(60).collect::<String>())
+            else {
+                return Ok(redirect_flash(
+                    &back,
+                    "error",
+                    "Please enter your name so others know this gift is taken.",
+                ));
             };
-            let guest_token = auth::read_cookie(&headers, auth::GUEST_COOKIE).filter(|t| t.len() >= 20 && t.len() <= 64);
+            let guest_token = auth::read_cookie(&headers, auth::GUEST_COOKIE)
+                .filter(|t| t.len() >= 20 && t.len() <= 64);
             let guest_token = match guest_token {
                 Some(t) => t,
                 None => {
                     let t = util::random_token(24);
-                    set_cookie = Some(auth::cookie_header(auth::GUEST_COOKIE, &t, 365 * 86400, state.config.secure_cookies));
+                    set_cookie = Some(auth::cookie_header(
+                        auth::GUEST_COOKIE,
+                        &t,
+                        365 * 86400,
+                        state.config.secure_cookies,
+                    ));
                     t
                 }
             };
-            Claimer::Guest { name, token: guest_token }
+            Claimer::Guest {
+                name,
+                token: guest_token,
+            }
         }
     };
     let mut resp = match insert_claim(&state, item.id, &claimer, f.quantity).await? {
-        Ok(()) => redirect_flash(&back, "ok", &format!("Thanks! “{}” is reserved for you.", item.title)),
+        Ok(()) => redirect_flash(
+            &back,
+            "ok",
+            &format!("Thanks! “{}” is reserved for you.", item.title),
+        ),
         Err(msg) => redirect_flash(&back, "error", msg),
     };
     if let Some(c) = set_cookie {
@@ -472,15 +662,30 @@ pub struct BackForm {
     back: Option<String>,
 }
 
-pub async fn unclaim(State(state): State<AppState>, ctx: Ctx, Path(id): Path<i64>, Form(f): Form<BackForm>) -> AppResult<Response> {
+pub async fn unclaim(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+    Form(f): Form<BackForm>,
+) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
     let owner = claim_owner(&state, id).await?;
     if owner.user_id != Some(user.id) {
         return Err(AppError::Forbidden);
     }
-    sqlx::query("DELETE FROM claims WHERE id = ?").bind(id).execute(&state.db).await?;
-    let back = f.back.map(|b| util::safe_next(Some(&b))).unwrap_or_else(|| format!("/lists/{}", owner.wishlist_id));
-    Ok(redirect_flash(&back, "ok", "Reservation released — someone else can get it now."))
+    sqlx::query("DELETE FROM claims WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    let back = f
+        .back
+        .map(|b| util::safe_next(Some(&b)))
+        .unwrap_or_else(|| format!("/lists/{}", owner.wishlist_id));
+    Ok(redirect_flash(
+        &back,
+        "ok",
+        "Reservation released — someone else can get it now.",
+    ))
 }
 
 pub async fn public_unclaim(
@@ -501,19 +706,42 @@ pub async fn public_unclaim(
     if !mine {
         return Err(AppError::Forbidden);
     }
-    sqlx::query("DELETE FROM claims WHERE id = ?").bind(id).execute(&state.db).await?;
-    Ok(redirect_flash(&format!("/p/{token}"), "ok", "Reservation released."))
+    sqlx::query("DELETE FROM claims WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    Ok(redirect_flash(
+        &format!("/p/{token}"),
+        "ok",
+        "Reservation released.",
+    ))
 }
 
-pub async fn toggle_purchased(State(state): State<AppState>, ctx: Ctx, Path(id): Path<i64>, Form(f): Form<BackForm>) -> AppResult<Response> {
+pub async fn toggle_purchased(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+    Form(f): Form<BackForm>,
+) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
     let owner = claim_owner(&state, id).await?;
     if owner.user_id != Some(user.id) {
         return Err(AppError::Forbidden);
     }
-    sqlx::query("UPDATE claims SET purchased = ? WHERE id = ?").bind(!owner.purchased).bind(id).execute(&state.db).await?;
-    let back = f.back.map(|b| util::safe_next(Some(&b))).unwrap_or_else(|| "/reservations".into());
-    let msg = if owner.purchased { "Marked as not yet bought." } else { "Marked as bought. Nice!" };
+    sqlx::query("UPDATE claims SET purchased = ? WHERE id = ?")
+        .bind(!owner.purchased)
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    let back = f
+        .back
+        .map(|b| util::safe_next(Some(&b)))
+        .unwrap_or_else(|| "/reservations".into());
+    let msg = if owner.purchased {
+        "Marked as not yet bought."
+    } else {
+        "Marked as bought. Nice!"
+    };
     Ok(redirect_flash(&back, "ok", msg))
 }
 
@@ -545,7 +773,9 @@ pub async fn reservations(State(state): State<AppState>, ctx: Ctx) -> AppResult<
     let mut purchased = Vec::new();
     let mut totals: std::collections::BTreeMap<String, i64> = Default::default();
     for r in rows {
-        let Some(item) = db::get_item(&state.db, r.item_id).await? else { continue };
+        let Some(item) = db::get_item(&state.db, r.item_id).await? else {
+            continue;
+        };
         if !r.purchased {
             if let Some(c) = item.price_cents {
                 *totals.entry(item.currency.clone()).or_default() += c * r.claim_qty;
@@ -567,9 +797,19 @@ pub async fn reservations(State(state): State<AppState>, ctx: Ctx) -> AppResult<
             to_buy.push(view);
         }
     }
-    let total_to_buy = (!totals.is_empty())
-        .then(|| totals.iter().map(|(cur, c)| price::format(*c, cur)).collect::<Vec<_>>().join(" + "));
-    render(ReservationsPage { ctx, to_buy, purchased, total_to_buy })
+    let total_to_buy = (!totals.is_empty()).then(|| {
+        totals
+            .iter()
+            .map(|(cur, c)| price::format(*c, cur))
+            .collect::<Vec<_>>()
+            .join(" + ")
+    });
+    render(ReservationsPage {
+        ctx,
+        to_buy,
+        purchased,
+        total_to_buy,
+    })
 }
 
 // ---------------------------------------------------------------- import
@@ -580,12 +820,25 @@ pub struct AddQuery {
 }
 
 /// Target of the "Add to Wishful Thinking" bookmarklet: pick a list for the current page.
-pub async fn add_page(State(state): State<AppState>, ctx: Ctx, Query(q): Query<AddQuery>) -> AppResult<Response> {
+pub async fn add_page(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Query(q): Query<AddQuery>,
+) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
-    let lists: Vec<_> = db::lists_managed_by(&state.db, user.id).await?.into_iter().filter(|l| !l.archived).collect();
+    let lists: Vec<_> = db::lists_managed_by(&state.db, user.id)
+        .await?
+        .into_iter()
+        .filter(|l| !l.archived)
+        .collect();
     let url = q.url.unwrap_or_default();
     if lists.len() == 1 && !url.is_empty() {
-        return Ok(axum::response::Redirect::to(&format!("/lists/{}/items/new?url={}", lists[0].id, util::urlencode(&url))).into_response());
+        return Ok(axum::response::Redirect::to(&format!(
+            "/lists/{}/items/new?url={}",
+            lists[0].id,
+            util::urlencode(&url)
+        ))
+        .into_response());
     }
     render(AddPage { ctx, url, lists })
 }
@@ -612,7 +865,11 @@ pub struct ImportResponse {
 }
 
 /// JSON import endpoint used by the item form to fill fields without a page reload.
-pub async fn import_api(State(state): State<AppState>, ctx: Ctx, Json(req): Json<ImportRequest>) -> AppResult<Json<ImportResponse>> {
+pub async fn import_api(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<ImportRequest>,
+) -> AppResult<Json<ImportResponse>> {
     ctx.require_user()?;
     Ok(Json(match state.importer.import(&req.url).await {
         Ok(outcome) => {

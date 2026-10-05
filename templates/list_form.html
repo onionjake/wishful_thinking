@@ -14,10 +14,10 @@
   <form method="post" action="{% if let Some(l) = list %}/lists/{{ l.id }}/edit{% else %}/lists{% endif %}" class="card stack">
     <label>List name<input name="title" value="{{ title }}" required maxlength="100" placeholder="e.g. Maya's 7th Birthday"></label>
     <div class="row">
-      <label>Who is it for? <span class="muted small">(optional)</span><input name="recipient_name" value="{{ recipient_name }}" maxlength="60" placeholder="e.g. Maya"></label>
-      <label>Event date <span class="muted small">(optional)</span><input type="date" name="event_date" value="{{ event_date }}"></label>
+      <label><span>Who is it for? <span class="muted small">(optional)</span></span><input name="recipient_name" value="{{ recipient_name }}" maxlength="60" placeholder="e.g. Maya"></label>
+      <label><span>Event date <span class="muted small">(optional)</span></span><input type="date" name="event_date" value="{{ event_date }}"></label>
     </div>
-    <label>Notes for gift-givers <span class="muted small">(optional)</span><textarea name="description" rows="3" maxlength="2000" placeholder="Sizes, favourite colours, things to avoid…">{{ description }}</textarea></label>
+    <label><span>Notes for gift-givers <span class="muted small">(optional)</span></span><textarea name="description" rows="3" maxlength="2000" placeholder="Sizes, favourite colours, things to avoid…">{{ description }}</textarea></label>
     <label class="check">
       <input type="checkbox" name="show_claims_to_owner" value="1" {% if show_claims_to_owner %}checked{% endif %}>
       <span><b>Show me what's been reserved</b><br><span class="muted small">Turn this on when you manage a list for someone else (like your child), so you can see who's buying what. Leave it off for your own list to keep gifts a surprise.</span></span>

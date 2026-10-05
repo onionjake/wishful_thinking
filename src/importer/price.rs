@@ -50,8 +50,8 @@ pub fn currency_from_symbol(s: &str) -> Option<&'static str> {
 }
 
 const CODES: &[&str] = &[
-    "USD", "EUR", "GBP", "CAD", "AUD", "NZD", "JPY", "CHF", "SEK", "NOK", "DKK", "PLN", "INR", "BRL",
-    "MXN", "HKD", "SGD", "KRW", "CNY", "ZAR",
+    "USD", "EUR", "GBP", "CAD", "AUD", "NZD", "JPY", "CHF", "SEK", "NOK", "DKK", "PLN", "INR",
+    "BRL", "MXN", "HKD", "SGD", "KRW", "CNY", "ZAR",
 ];
 
 fn is_known_code(code: &str) -> bool {
@@ -129,7 +129,11 @@ pub fn parse_amount(raw: &str, currency: &str) -> Option<i64> {
         None => (run.as_str(), ""),
     };
     let int_digits: String = int_part.chars().filter(|c| c.is_ascii_digit()).collect();
-    let int_val: i64 = if int_digits.is_empty() { 0 } else { int_digits.parse().ok()? };
+    let int_val: i64 = if int_digits.is_empty() {
+        0
+    } else {
+        int_digits.parse().ok()?
+    };
     let minor = minor_units(currency);
     let mut cents = int_val.checked_mul(minor)?;
     if minor == 100 && !frac_part.is_empty() {
@@ -182,12 +186,16 @@ pub fn format(cents: i64, currency: &str) -> String {
     let mut grouped = String::new();
     let digits = whole.abs().to_string();
     for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             grouped.push(',');
         }
         grouped.push(ch);
     }
-    let number = if minor == 100 { format!("{grouped}.{frac:02}") } else { grouped };
+    let number = if minor == 100 {
+        format!("{grouped}.{frac:02}")
+    } else {
+        grouped
+    };
     match symbol(currency) {
         Some(sym) => format!("{sym}{number}"),
         None => format!("{number} {currency}"),
@@ -217,9 +225,15 @@ mod tests {
         assert_eq!(parse_price("19.9", Some("USD")), Some((1990, "USD".into())));
         assert_eq!(parse_price("CA$ 45.00", None), Some((4500, "CAD".into())));
         assert_eq!(parse_price("¥3,980", None), Some((3980, "JPY".into())));
-        assert_eq!(parse_price("1 299,95 kr", None), Some((129995, "SEK".into())));
+        assert_eq!(
+            parse_price("1 299,95 kr", None),
+            Some((129995, "SEK".into()))
+        );
         assert_eq!(parse_price("USD 12.50", None), Some((1250, "USD".into())));
-        assert_eq!(parse_price("Now only 1,299 dollars", Some("USD")), Some((129900, "USD".into())));
+        assert_eq!(
+            parse_price("Now only 1,299 dollars", Some("USD")),
+            Some((129900, "USD".into()))
+        );
         assert_eq!(parse_price("no price", None), None);
     }
 

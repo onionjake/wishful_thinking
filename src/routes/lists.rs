@@ -12,12 +12,22 @@ use crate::util;
 use crate::AppState;
 
 /// Load a list and check the current user may edit it.
-pub async fn editable_list(state: &AppState, ctx: &Ctx, list_id: i64) -> AppResult<(Wishlist, Access, User)> {
+pub async fn editable_list(
+    state: &AppState,
+    ctx: &Ctx,
+    list_id: i64,
+) -> AppResult<(Wishlist, Access, User)> {
     let user = ctx.require_user()?.clone();
-    let list = db::get_list(&state.db, list_id).await?.ok_or(AppError::NotFound)?;
+    let list = db::get_list(&state.db, list_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
     let access = db::list_access(&state.db, &list, Some(user.id)).await?;
     if !access.can_edit() {
-        return Err(if access.can_view() { AppError::Forbidden } else { AppError::NotFound });
+        return Err(if access.can_view() {
+            AppError::Forbidden
+        } else {
+            AppError::NotFound
+        });
     }
     Ok((list, access, user))
 }
@@ -54,8 +64,10 @@ fn validate_list(f: &ListForm) -> Result<CleanList, String> {
     }
     Ok(CleanList {
         title,
-        recipient_name: util::non_empty(f.recipient_name.as_deref()).map(|s| s.chars().take(60).collect()),
-        description: util::non_empty(f.description.as_deref()).map(|s| s.chars().take(2000).collect()),
+        recipient_name: util::non_empty(f.recipient_name.as_deref())
+            .map(|s| s.chars().take(60).collect()),
+        description: util::non_empty(f.description.as_deref())
+            .map(|s| s.chars().take(2000).collect()),
         event_date,
         show_claims_to_owner: f.show_claims_to_owner.is_some(),
     })
@@ -63,7 +75,11 @@ fn validate_list(f: &ListForm) -> Result<CleanList, String> {
 
 pub async fn new_list_page(State(state): State<AppState>, ctx: Ctx) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
-    let families = db::families_for_user(&state.db, user.id).await?.into_iter().map(|f| (f, true)).collect();
+    let families = db::families_for_user(&state.db, user.id)
+        .await?
+        .into_iter()
+        .map(|f| (f, true))
+        .collect();
     render(ListFormPage {
         ctx,
         list: None,
@@ -133,10 +149,18 @@ pub async fn create_list(
         .await?;
     }
     tx.commit().await?;
-    Ok(redirect_flash(&format!("/lists/{id}"), "ok", "List created. Add your first wish!"))
+    Ok(redirect_flash(
+        &format!("/lists/{id}"),
+        "ok",
+        "List created. Add your first wish!",
+    ))
 }
 
-pub async fn edit_list_page(State(state): State<AppState>, ctx: Ctx, Path(id): Path<i64>) -> AppResult<Response> {
+pub async fn edit_list_page(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+) -> AppResult<Response> {
     let (list, _, _) = editable_list(&state, &ctx, id).await?;
     render(ListFormPage {
         ctx,
@@ -186,26 +210,49 @@ pub async fn update_list(
     .bind(id)
     .execute(&state.db)
     .await?;
-    Ok(redirect_flash(&format!("/lists/{id}"), "ok", "List updated."))
+    Ok(redirect_flash(
+        &format!("/lists/{id}"),
+        "ok",
+        "List updated.",
+    ))
 }
 
-pub async fn delete_list(State(state): State<AppState>, ctx: Ctx, Path(id): Path<i64>) -> AppResult<Response> {
+pub async fn delete_list(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+) -> AppResult<Response> {
     let (list, access, _) = editable_list(&state, &ctx, id).await?;
     if access != Access::Owner {
         return Err(AppError::Forbidden);
     }
-    sqlx::query("DELETE FROM wishlists WHERE id = ?").bind(id).execute(&state.db).await?;
-    Ok(redirect_flash("/", "ok", &format!("Deleted “{}”.", list.title)))
+    sqlx::query("DELETE FROM wishlists WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    Ok(redirect_flash(
+        "/",
+        "ok",
+        &format!("Deleted “{}”.", list.title),
+    ))
 }
 
-pub async fn toggle_archive(State(state): State<AppState>, ctx: Ctx, Path(id): Path<i64>) -> AppResult<Response> {
+pub async fn toggle_archive(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+) -> AppResult<Response> {
     let (list, _, _) = editable_list(&state, &ctx, id).await?;
     sqlx::query("UPDATE wishlists SET archived = ? WHERE id = ?")
         .bind(!list.archived)
         .bind(id)
         .execute(&state.db)
         .await?;
-    let msg = if list.archived { "List restored." } else { "List archived. Family members won't see it until you restore it." };
+    let msg = if list.archived {
+        "List restored."
+    } else {
+        "List archived. Family members won't see it until you restore it."
+    };
     Ok(redirect_flash(&format!("/lists/{id}"), "ok", msg))
 }
 
@@ -222,10 +269,16 @@ pub async fn view_list(
     Path(id): Path<i64>,
     Query(q): Query<ViewQuery>,
 ) -> AppResult<Response> {
-    let list = db::get_list(&state.db, id).await?.ok_or(AppError::NotFound)?;
+    let list = db::get_list(&state.db, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
     let access = db::list_access(&state.db, &list, ctx.user.as_ref().map(|u| u.id)).await?;
     if !access.can_view() {
-        return Err(if ctx.user.is_none() { AppError::LoginRequired(ctx.path.clone()) } else { AppError::NotFound });
+        return Err(if ctx.user.is_none() {
+            AppError::LoginRequired(ctx.path.clone())
+        } else {
+            AppError::NotFound
+        });
     }
     if list.archived && !access.can_edit() {
         return Err(AppError::NotFound);
@@ -272,7 +325,11 @@ pub async fn build_list_page(
     let can_claim = claims_visible && (me.is_some() || public_view);
 
     let mut items = db::items_for_list(&state.db, list.id).await?;
-    let claims = if claims_visible { db::claims_for_list(&state.db, list.id).await? } else { vec![] };
+    let claims = if claims_visible {
+        db::claims_for_list(&state.db, list.id).await?
+    } else {
+        vec![]
+    };
     if !claims_visible {
         for it in &mut items {
             it.claimed_qty = 0;
@@ -280,8 +337,20 @@ pub async fn build_list_page(
     }
     let sort = sort.unwrap_or_else(|| "priority".into());
     match sort.as_str() {
-        "price" => items.sort_by_key(|i| (i.received, i.price_cents.is_none(), i.price_cents.unwrap_or(0))),
-        "price_desc" => items.sort_by_key(|i| (i.received, i.price_cents.is_none(), -i.price_cents.unwrap_or(0))),
+        "price" => items.sort_by_key(|i| {
+            (
+                i.received,
+                i.price_cents.is_none(),
+                i.price_cents.unwrap_or(0),
+            )
+        }),
+        "price_desc" => items.sort_by_key(|i| {
+            (
+                i.received,
+                i.price_cents.is_none(),
+                -i.price_cents.unwrap_or(0),
+            )
+        }),
         "newest" => items.sort_by_key(|i| (i.received, -i.id)),
         _ => {}
     }
@@ -289,7 +358,11 @@ pub async fn build_list_page(
     let mut active = Vec::new();
     let mut received = Vec::new();
     for item in items {
-        let item_claims: Vec<_> = claims.iter().filter(|c| c.item_id == item.id).cloned().collect();
+        let item_claims: Vec<_> = claims
+            .iter()
+            .filter(|c| c.item_id == item.id)
+            .cloned()
+            .collect();
         let my_claim = item_claims
             .iter()
             .find(|c| match (me, c.user_id, &guest_token, &c.guest_token) {
@@ -298,7 +371,11 @@ pub async fn build_list_page(
                 _ => false,
             })
             .cloned();
-        let view = ItemView { item, claims: item_claims, my_claim };
+        let view = ItemView {
+            item,
+            claims: item_claims,
+            my_claim,
+        };
         if view.item.received {
             received.push(view);
         } else {
@@ -320,7 +397,10 @@ pub async fn build_list_page(
     } else {
         vec![]
     };
-    let public_url = list.public_token.as_ref().map(|t| state.absolute(&ctx.base_url, &format!("/p/{t}")));
+    let public_url = list
+        .public_token
+        .as_ref()
+        .map(|t| state.absolute(&ctx.base_url, &format!("/p/{t}")));
     let guest_name = String::new();
     Ok(ListPage {
         owner_name,
@@ -343,12 +423,17 @@ pub async fn build_list_page(
 
 // ---------------------------------------------------------------- sharing
 
-pub async fn share_page(State(state): State<AppState>, ctx: Ctx, Path(id): Path<i64>) -> AppResult<Response> {
+pub async fn share_page(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+) -> AppResult<Response> {
     let (list, access, user) = editable_list(&state, &ctx, id).await?;
-    let shared: Vec<i64> = sqlx::query_scalar("SELECT family_id FROM wishlist_families WHERE wishlist_id = ?")
-        .bind(id)
-        .fetch_all(&state.db)
-        .await?;
+    let shared: Vec<i64> =
+        sqlx::query_scalar("SELECT family_id FROM wishlist_families WHERE wishlist_id = ?")
+            .bind(id)
+            .fetch_all(&state.db)
+            .await?;
     let families = db::families_for_user(&state.db, user.id)
         .await?
         .into_iter()
@@ -377,8 +462,19 @@ pub async fn share_page(State(state): State<AppState>, ctx: Ctx, Path(id): Path<
     .bind(id)
     .fetch_all(&state.db)
     .await?;
-    let public_url = list.public_token.as_ref().map(|t| state.absolute(&ctx.base_url, &format!("/p/{t}")));
-    render(SharePage { ctx, list, is_owner: access == Access::Owner, families, public_url, managers, candidates })
+    let public_url = list
+        .public_token
+        .as_ref()
+        .map(|t| state.absolute(&ctx.base_url, &format!("/p/{t}")));
+    render(SharePage {
+        ctx,
+        list,
+        is_owner: access == Access::Owner,
+        families,
+        public_url,
+        managers,
+        candidates,
+    })
 }
 
 #[derive(Deserialize)]
@@ -416,7 +512,11 @@ pub async fn update_families(
         .await?;
     }
     tx.commit().await?;
-    Ok(redirect_flash(&format!("/lists/{id}/share"), "ok", "Family sharing updated."))
+    Ok(redirect_flash(
+        &format!("/lists/{id}/share"),
+        "ok",
+        "Family sharing updated.",
+    ))
 }
 
 #[derive(Deserialize)]
@@ -434,7 +534,11 @@ pub async fn update_public_link(
     let (token, msg) = match f.action.as_str() {
         "enable" | "regenerate" => (
             Some(util::random_token(18)),
-            if f.action == "enable" { "Public link created. Anyone with the link can view this list." } else { "New link created. The old link no longer works." },
+            if f.action == "enable" {
+                "Public link created. Anyone with the link can view this list."
+            } else {
+                "New link created. The old link no longer works."
+            },
         ),
         "disable" => (None, "Public link turned off."),
         _ => return Err(AppError::BadRequest("Unknown action".into())),
@@ -474,9 +578,17 @@ pub async fn add_manager(
     .execute(&state.db)
     .await?;
     if res.rows_affected() == 0 {
-        return Ok(redirect_flash(&format!("/lists/{id}/share"), "error", "Co-managers must be in one of your families."));
+        return Ok(redirect_flash(
+            &format!("/lists/{id}/share"),
+            "error",
+            "Co-managers must be in one of your families.",
+        ));
     }
-    Ok(redirect_flash(&format!("/lists/{id}/share"), "ok", "Co-manager added. They can now add and edit items."))
+    Ok(redirect_flash(
+        &format!("/lists/{id}/share"),
+        "ok",
+        "Co-manager added. They can now add and edit items.",
+    ))
 }
 
 pub async fn remove_manager(
@@ -495,7 +607,15 @@ pub async fn remove_manager(
         .execute(&state.db)
         .await?;
     if user.id == uid && access != Access::Owner {
-        return Ok(redirect_flash("/", "ok", "You're no longer a co-manager of that list."));
+        return Ok(redirect_flash(
+            "/",
+            "ok",
+            "You're no longer a co-manager of that list.",
+        ));
     }
-    Ok(redirect_flash(&format!("/lists/{id}/share"), "ok", "Co-manager removed."))
+    Ok(redirect_flash(
+        &format!("/lists/{id}/share"),
+        "ok",
+        "Co-manager removed.",
+    ))
 }

@@ -19,28 +19,43 @@ pub async fn home(State(state): State<AppState>, ctx: Ctx) -> AppResult<Response
             .bind(user.id)
             .fetch_one(&state.db)
             .await?;
-    render(DashboardPage { ctx, my_lists, shared_lists, families, reservation_count })
+    render(DashboardPage {
+        ctx,
+        my_lists,
+        shared_lists,
+        families,
+        reservation_count,
+    })
 }
 
 const CACHE: &str = "public, max-age=3600";
 
 pub async fn stylesheet() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8"), (header::CACHE_CONTROL, CACHE)],
+        [
+            (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+            (header::CACHE_CONTROL, CACHE),
+        ],
         include_str!("../../static/style.css"),
     )
 }
 
 pub async fn script() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, CACHE)],
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, CACHE),
+        ],
         include_str!("../../static/app.js"),
     )
 }
 
 pub async fn favicon() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "image/svg+xml"), (header::CACHE_CONTROL, CACHE)],
+        [
+            (header::CONTENT_TYPE, "image/svg+xml"),
+            (header::CACHE_CONTROL, CACHE),
+        ],
         include_str!("../../static/favicon.svg"),
     )
 }

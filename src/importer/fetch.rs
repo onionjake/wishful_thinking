@@ -14,7 +14,9 @@ const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KH
 
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError {
-    #[error("That doesn't look like a web address. Paste a link starting with http:// or https://")]
+    #[error(
+        "That doesn't look like a web address. Paste a link starting with http:// or https://"
+    )]
     InvalidUrl,
     #[error("Links to private or local network addresses can't be imported")]
     Forbidden,
@@ -29,9 +31,14 @@ pub enum FetchError {
 }
 
 pub enum Fetched {
-    Html { final_url: Url, body: String },
+    Html {
+        final_url: Url,
+        body: String,
+    },
     /// The link points directly at an image.
-    Image { final_url: Url },
+    Image {
+        final_url: Url,
+    },
 }
 
 pub fn is_public_ip(ip: IpAddr) -> bool {
@@ -76,7 +83,10 @@ pub fn validate_url(raw: &str, allow_private: bool) -> Result<Url, FetchError> {
 }
 
 fn check_url(url: &Url, allow_private: bool) -> Result<(), FetchError> {
-    if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() || url.password().is_some() {
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
         return Err(FetchError::InvalidUrl);
     }
     let host = url.host().ok_or(FetchError::InvalidUrl)?;
@@ -88,7 +98,12 @@ fn check_url(url: &Url, allow_private: bool) -> Result<(), FetchError> {
         url::Host::Ipv6(ip) if !is_public_ip(IpAddr::V6(ip)) => Err(FetchError::Forbidden),
         url::Host::Domain(d) => {
             let d = d.trim_end_matches('.').to_ascii_lowercase();
-            if d == "localhost" || d.ends_with(".localhost") || d.ends_with(".local") || d.ends_with(".internal") || !d.contains('.') {
+            if d == "localhost"
+                || d.ends_with(".localhost")
+                || d.ends_with(".local")
+                || d.ends_with(".internal")
+                || !d.contains('.')
+            {
                 Err(FetchError::Forbidden)
             } else {
                 Ok(())
@@ -106,8 +121,10 @@ impl Resolve for PublicOnlyResolver {
     fn resolve(&self, name: Name) -> Resolving {
         Box::pin(async move {
             let host = name.as_str().to_string();
-            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
-            let public: Vec<SocketAddr> = addrs.into_iter().filter(|a| is_public_ip(a.ip())).collect();
+            let addrs: Vec<SocketAddr> =
+                tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
+            let public: Vec<SocketAddr> =
+                addrs.into_iter().filter(|a| is_public_ip(a.ip())).collect();
             if public.is_empty() {
                 return Err(format!("{host} does not resolve to a public address").into());
             }
@@ -120,13 +137,18 @@ pub fn build_client(allow_private: bool) -> reqwest::Client {
     let mut headers = header::HeaderMap::new();
     headers.insert(
         header::ACCEPT,
-        header::HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,image/*;q=0.8,*/*;q=0.5"),
+        header::HeaderValue::from_static(
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/*;q=0.8,*/*;q=0.5",
+        ),
     );
-    headers.insert(header::ACCEPT_LANGUAGE, header::HeaderValue::from_static("en-US,en;q=0.9"));
+    headers.insert(
+        header::ACCEPT_LANGUAGE,
+        header::HeaderValue::from_static("en-US,en;q=0.9"),
+    );
     let mut builder = reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .default_headers(headers)
-        .timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(15))
         .connect_timeout(Duration::from_secs(8))
         .redirect(reqwest::redirect::Policy::custom(move |attempt| {
             if attempt.previous().len() >= 6 {
@@ -159,7 +181,10 @@ pub async fn fetch(client: &reqwest::Client, url: &Url) -> Result<Fetched, Fetch
     if content_type.starts_with("image/") {
         return Ok(Fetched::Image { final_url });
     }
-    if resp.content_length().is_some_and(|l| l as usize > MAX_BYTES) {
+    if resp
+        .content_length()
+        .is_some_and(|l| l as usize > MAX_BYTES)
+    {
         return Err(FetchError::TooLarge);
     }
     let mut body = Vec::new();
@@ -171,7 +196,10 @@ pub async fn fetch(client: &reqwest::Client, url: &Url) -> Result<Fetched, Fetch
             break;
         }
     }
-    Ok(Fetched::Html { final_url, body: String::from_utf8_lossy(&body).into_owned() })
+    Ok(Fetched::Html {
+        final_url,
+        body: String::from_utf8_lossy(&body).into_owned(),
+    })
 }
 
 fn map_err(e: reqwest::Error) -> FetchError {
@@ -215,7 +243,10 @@ mod tests {
             "http://user:pw@example.com/",
             "http://intranet/",
         ] {
-            assert!(validate_url(bad, false).is_err(), "{bad} should be rejected");
+            assert!(
+                validate_url(bad, false).is_err(),
+                "{bad} should be rejected"
+            );
         }
         assert!(validate_url("example.com/product", false).is_ok());
         assert!(validate_url("https://www.target.com/p/123", false).is_ok());

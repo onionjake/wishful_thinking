@@ -58,7 +58,7 @@
     </fieldset>
     <div class="row">
       <label class="qty">How many?<input type="number" name="quantity" min="1" max="99" value="{{ form.quantity }}"></label>
-      <label class="grow">Notes <span class="muted small">(size, colour, model…)</span><input name="notes" value="{{ form.notes }}" maxlength="2000" placeholder="e.g. Size 8, the blue one"></label>
+      <label class="grow"><span>Notes <span class="muted small">(size, colour, model…)</span></span><input name="notes" value="{{ form.notes }}" maxlength="2000" placeholder="e.g. Size 8, the blue one"></label>
     </div>
     <div class="actions">
       <button class="btn" type="submit">{% if item_id.is_some() %}Save changes{% else %}Add to list{% endif %}</button>
