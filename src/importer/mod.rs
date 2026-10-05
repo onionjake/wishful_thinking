@@ -261,7 +261,7 @@ fn redirected_away(original: &Url, fin: &Url) -> bool {
     }
     let last = original
         .path_segments()
-        .and_then(|s| s.filter(|x| !x.is_empty()).next_back())
+        .and_then(|mut s| s.rfind(|x| !x.is_empty()))
         .unwrap_or("");
     let last = last.trim_end_matches(".html");
     last.len() >= 4 && !fin.as_str().contains(last)
