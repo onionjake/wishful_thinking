@@ -1,0 +1,26 @@
+# Production. The deploy workflow copies the binary to /srv/wishful, writes
+# .env (the site's base URL and the optional LLM key) and installs this unit.
+# A reverse proxy in front terminates TLS and forwards to :3000.
+[Unit]
+Description=Wishful Thinking
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=deploy
+WorkingDirectory=/srv/wishful
+Environment=WT_BIND=0.0.0.0:3000
+Environment=WT_DATABASE_URL=sqlite:///srv/wishful/data/wishful.db
+Environment=WT_SECURE_COOKIES=1
+EnvironmentFile=-/srv/wishful/.env
+ExecStart=/srv/wishful/wishful_thinking
+Restart=on-failure
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/srv/wishful/data
+
+[Install]
+WantedBy=multi-user.target
