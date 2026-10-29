@@ -1,0 +1,67 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --locked
+
+      # SQLite is bundled and TLS is rustls, so a build on the runner runs on
+      # the VM's Debian 13 as is.
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<EOF
+          Host prod
+            HostName ${{ secrets.DEPLOY_HOST }}
+            Port ${{ secrets.DEPLOY_PORT }}
+            User deploy
+          EOF
+
+      - name: Deploy
+        env:
+          WT_BASE_URL: ${{ vars.WT_BASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          scp target/release/wishful_thinking prod:/srv/wishful/wishful_thinking.new
+          scp deploy/wishful.service prod:/srv/wishful/wishful.service
+          ssh prod 'umask 077 && cat > /srv/wishful/.env' <<EOF
+          WT_BASE_URL=${WT_BASE_URL}
+          ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+          EOF
+          ssh prod 'set -e
+            cd /srv/wishful
+            mkdir -p data
+            mv wishful_thinking.new wishful_thinking
+            sudo install -m 0644 wishful.service /etc/systemd/system/wishful.service
+            sudo systemctl daemon-reload
+            sudo systemctl enable wishful
+            sudo systemctl restart wishful
+            for i in $(seq 30); do curl -fsS http://localhost:3000/healthz && exit 0; sleep 1; done
+            sudo journalctl -u wishful -n 50 --no-pager
+            exit 1'
