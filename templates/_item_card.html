@@ -1,4 +1,4 @@
-<article class="item{% if iv.item.received %} received{% endif %}{% if claims_visible && iv.item.fully_claimed() %} taken{% endif %}" id="item-{{ iv.item.id }}">
+<article class="item{% if iv.item.received %} received{% endif %}{% if iv.item.fully_claimed() %} taken{% endif %}" id="item-{{ iv.item.id }}">
   <div class="item-img">
     {% if let Some(img) = iv.item.image_url %}<img src="{{ img }}" alt="" loading="lazy" referrerpolicy="no-referrer">{% else %}<span>🎁</span>{% endif %}
   </div>
@@ -25,6 +25,10 @@
         <span class="pill pill-mine">⭐ You're getting this{% if mine.quantity > 1 %} ×{{ mine.quantity }}{% endif %}</span>
       {% endif %}
     </div>
+    {% else if !claims_visible && !iv.claims.is_empty() %}
+    <div class="claims">
+      {% for c in iv.claims %}<span class="pill pill-ok">🎁 From {{ c.claimer_name }}{% if c.quantity > 1 %} ×{{ c.quantity }}{% endif %}</span>{% endfor %}
+    </div>
     {% endif %}
 
     <div class="item-actions">
@@ -40,6 +44,14 @@
             {% if self.needs_guest_name() %}<input name="guest_name" placeholder="Your name" required maxlength="60" aria-label="Your name">{% endif %}
             {% if iv.item.remaining() > 1 %}
             <select name="quantity" aria-label="How many">{% for n in 1..=iv.item.remaining() %}<option value="{{ n }}">{{ n }}</option>{% endfor %}</select>
+            {% endif %}
+            {% if self.asks_reveal() %}
+            <label class="reveal-pick">{{ self.recipient_label() }} can see it's bought from
+              <select name="reveal_month" required>
+                <option value="">Pick a month…</option>
+                {% for m in reveal_options %}<option value="{{ m.value }}"{% if m.selected %} selected{% endif %}>{{ m.label }}</option>{% endfor %}
+              </select>
+            </label>
             {% endif %}
             <button class="btn btn-small" type="submit">{% if iv.my_claim.is_some() %}Get another{% else %}🎁 I'll get this{% endif %}</button>
           </form>

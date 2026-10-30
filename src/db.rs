@@ -248,12 +248,20 @@ pub struct Claim {
     pub guest_token: Option<String>,
     pub quantity: i64,
     pub purchased: bool,
+    pub reveal_on: Option<String>,
+}
+
+impl Claim {
+    /// Whether the giver's chosen reveal month has arrived, so the list owner may see it.
+    pub fn is_revealed(&self) -> bool {
+        util::is_revealed(self.reveal_on.as_deref())
+    }
 }
 
 pub async fn claims_for_list(db: &Db, list_id: i64) -> sqlx::Result<Vec<Claim>> {
     sqlx::query_as::<_, Claim>(
         "SELECT c.id, c.item_id, c.user_id, COALESCE(u.display_name, c.guest_name, 'Someone') AS claimer_name,
-                c.guest_token, c.quantity, c.purchased
+                c.guest_token, c.quantity, c.purchased, c.reveal_on
            FROM claims c JOIN items i ON i.id = c.item_id LEFT JOIN users u ON u.id = c.user_id
           WHERE i.wishlist_id = ? ORDER BY c.id",
     )

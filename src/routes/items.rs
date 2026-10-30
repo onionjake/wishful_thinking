@@ -11,7 +11,8 @@ use crate::error::{AppError, AppResult};
 use crate::importer::{price, ImportOutcome};
 use crate::routes::lists::editable_list;
 use crate::templates::{
-    render, AddPage, Ctx, ItemFormPage, ItemFormValues, ReservationView, ReservationsPage,
+    month_options, render, AddPage, Ctx, ItemFormPage, ItemFormValues, ReservationView,
+    ReservationsPage,
 };
 use crate::util;
 use crate::AppState;
@@ -432,6 +433,20 @@ pub async fn copy_item(
 pub struct ClaimForm {
     quantity: Option<i64>,
     guest_name: Option<String>,
+    /// "2027-01": the month from which the list owner may see this reservation.
+    reveal_month: Option<String>,
+}
+
+/// The reveal date to store for a new reservation. Required unless the owner already sees
+/// reservations.
+fn reveal_choice(list: &Wishlist, raw: Option<&str>) -> Result<Option<String>, &'static str> {
+    match util::non_empty(raw) {
+        None if list.show_claims_to_owner => Ok(None),
+        None => Err("Please pick the month when it's okay for them to see this was bought."),
+        Some(m) => util::reveal_month(&m)
+            .map(|d| Some(d.to_string()))
+            .ok_or("Please pick a month from the list."),
+    }
 }
 
 enum Claimer {
@@ -445,6 +460,7 @@ async fn insert_claim(
     item_id: i64,
     claimer: &Claimer,
     qty: Option<i64>,
+    reveal_on: Option<&str>,
 ) -> AppResult<Result<(), &'static str>> {
     let mut tx = state.db.begin().await?;
     let row: Option<(i64, i64, bool)> = sqlx::query_as(
@@ -481,27 +497,34 @@ async fn insert_claim(
         }
     };
     if let Some(claim_id) = existing {
-        sqlx::query("UPDATE claims SET quantity = quantity + ? WHERE id = ?")
-            .bind(qty)
-            .bind(claim_id)
+        sqlx::query(
+            "UPDATE claims SET quantity = quantity + ?, reveal_on = COALESCE(?, reveal_on) WHERE id = ?",
+        )
+        .bind(qty)
+        .bind(reveal_on)
+        .bind(claim_id)
             .execute(&mut *tx)
             .await?;
     } else {
         match claimer {
             Claimer::User(uid) => {
-                sqlx::query("INSERT INTO claims (item_id, user_id, quantity) VALUES (?, ?, ?)")
-                    .bind(item_id)
-                    .bind(uid)
-                    .bind(qty)
-                    .execute(&mut *tx)
-                    .await?;
+                sqlx::query(
+                    "INSERT INTO claims (item_id, user_id, quantity, reveal_on) VALUES (?, ?, ?, ?)",
+                )
+                .bind(item_id)
+                .bind(uid)
+                .bind(qty)
+                .bind(reveal_on)
+                .execute(&mut *tx)
+                .await?;
             }
             Claimer::Guest { name, token } => {
-                sqlx::query("INSERT INTO claims (item_id, guest_name, guest_token, quantity) VALUES (?, ?, ?, ?)")
+                sqlx::query("INSERT INTO claims (item_id, guest_name, guest_token, quantity, reveal_on) VALUES (?, ?, ?, ?, ?)")
                     .bind(item_id)
                     .bind(name)
                     .bind(token)
                     .bind(qty)
+                    .bind(reveal_on)
                     .execute(&mut *tx)
                     .await?;
             }
@@ -542,8 +565,20 @@ pub async fn claim_item(
         });
     }
     let back = format!("/lists/{}#item-{id}", list.id);
+    let reveal_on = match reveal_choice(&list, f.reveal_month.as_deref()) {
+        Ok(r) => r,
+        Err(msg) => return Ok(redirect_flash(&back, "error", msg)),
+    };
     Ok(
-        match insert_claim(&state, id, &Claimer::User(user.id), f.quantity).await? {
+        match insert_claim(
+            &state,
+            id,
+            &Claimer::User(user.id),
+            f.quantity,
+            reveal_on.as_deref(),
+        )
+        .await?
+        {
             Ok(()) => redirect_flash(
                 &back,
                 "ok",
@@ -581,6 +616,10 @@ pub async fn public_claim(
         .filter(|i| i.wishlist_id == list.id)
         .ok_or(AppError::NotFound)?;
     let back = format!("/p/{token}#item-{id}");
+    let reveal_on = match reveal_choice(&list, f.reveal_month.as_deref()) {
+        Ok(r) => r,
+        Err(msg) => return Ok(redirect_flash(&back, "error", msg)),
+    };
     let mut set_cookie = None;
     let claimer = match &ctx.user {
         Some(user) => {
@@ -625,14 +664,15 @@ pub async fn public_claim(
             }
         }
     };
-    let mut resp = match insert_claim(&state, item.id, &claimer, f.quantity).await? {
-        Ok(()) => redirect_flash(
-            &back,
-            "ok",
-            &format!("Thanks! “{}” is reserved for you.", item.title),
-        ),
-        Err(msg) => redirect_flash(&back, "error", msg),
-    };
+    let mut resp =
+        match insert_claim(&state, item.id, &claimer, f.quantity, reveal_on.as_deref()).await? {
+            Ok(()) => redirect_flash(
+                &back,
+                "ok",
+                &format!("Thanks! “{}” is reserved for you.", item.title),
+            ),
+            Err(msg) => redirect_flash(&back, "error", msg),
+        };
     if let Some(c) = set_cookie {
         resp.headers_mut().append(SET_COOKIE, c);
     }
@@ -745,11 +785,57 @@ pub async fn toggle_purchased(
     Ok(redirect_flash(&back, "ok", msg))
 }
 
+#[derive(Deserialize)]
+pub struct RevealForm {
+    reveal_month: Option<String>,
+    back: Option<String>,
+}
+
+/// Change when the list owner may see one of your reservations.
+pub async fn set_reveal(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+    Form(f): Form<RevealForm>,
+) -> AppResult<Response> {
+    let user = ctx.require_user()?.clone();
+    let owner = claim_owner(&state, id).await?;
+    if owner.user_id != Some(user.id) {
+        return Err(AppError::Forbidden);
+    }
+    let back = f
+        .back
+        .map(|b| util::safe_next(Some(&b)))
+        .unwrap_or_else(|| "/reservations".into());
+    let Some(month) = f.reveal_month.as_deref().and_then(util::reveal_month) else {
+        return Ok(redirect_flash(
+            &back,
+            "error",
+            "Please pick a month from the list.",
+        ));
+    };
+    sqlx::query("UPDATE claims SET reveal_on = ? WHERE id = ?")
+        .bind(month.to_string())
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    Ok(redirect_flash(
+        &back,
+        "ok",
+        &format!(
+            "They'll be able to see it from {}.",
+            util::pretty_month(month)
+        ),
+    ))
+}
+
 #[derive(sqlx::FromRow)]
 struct ReservationRow {
     claim_id: i64,
     claim_qty: i64,
     purchased: bool,
+    reveal_on: Option<String>,
+    show_claims_to_owner: bool,
     list_id: i64,
     list_title: String,
     recipient: String,
@@ -760,7 +846,7 @@ struct ReservationRow {
 pub async fn reservations(State(state): State<AppState>, ctx: Ctx) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
     let rows: Vec<ReservationRow> = sqlx::query_as(
-        "SELECT c.id AS claim_id, c.quantity AS claim_qty, c.purchased, w.id AS list_id, w.title AS list_title,
+        "SELECT c.id AS claim_id, c.quantity AS claim_qty, c.purchased, c.reveal_on, w.show_claims_to_owner, w.id AS list_id, w.title AS list_title,
                 COALESCE(w.recipient_name, u.display_name) AS recipient, w.event_date, i.id AS item_id
            FROM claims c JOIN items i ON i.id = c.item_id JOIN wishlists w ON w.id = i.wishlist_id
            JOIN users u ON u.id = w.owner_id
@@ -781,10 +867,19 @@ pub async fn reservations(State(state): State<AppState>, ctx: Ctx) -> AppResult<
                 *totals.entry(item.currency.clone()).or_default() += c * r.claim_qty;
             }
         }
+        let surprise = !r.show_claims_to_owner;
+        let reveal_options = if surprise {
+            month_options(r.reveal_on.as_deref().and_then(util::parse_date))
+        } else {
+            vec![]
+        };
         let view = ReservationView {
             claim_id: r.claim_id,
             quantity: r.claim_qty,
             purchased: r.purchased,
+            surprise,
+            reveal_on: r.reveal_on,
+            reveal_options,
             item,
             list_id: r.list_id,
             list_title: r.list_title,

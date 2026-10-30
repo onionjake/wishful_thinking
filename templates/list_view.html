@@ -33,10 +33,16 @@
 </section>
 
 {% if is_editor && !claims_visible %}
-<p class="hint">🤫 Reservations are hidden from you so gifts stay a surprise.</p>
+<p class="hint">🤫 Reservations are hidden from you so gifts stay a surprise. Each gift-giver picks a month after which you can see what they got.</p>
+{% if self.revealed_count() > 0 %}
+<p class="hint">🎁 {{ self.revealed_count() }} wish{% if self.revealed_count() != 1 %}es have{% else %} has{% endif %} been given to you. Tap <b>Got it ✓</b> once you have {% if self.revealed_count() != 1 %}them{% else %}it{% endif %}.</p>
+{% endif %}
 {% endif %}
 {% if public_view && ctx.user.is_none() %}
 <p class="hint">Planning to buy something? Tap <b>I'll get this</b> and enter your name so nobody else buys it too. The list owner won't see who.</p>
+{% endif %}
+{% if can_claim && self.asks_reveal() && !items.is_empty() %}
+<p class="hint">📅 When you reserve a gift, pick the month {{ self.recipient_label() }} can find out it's been bought — usually the month after the occasion (for Christmas, choose January). It doesn't have to be exact. Until then, it stays a secret.</p>
 {% endif %}
 
 {% if items.is_empty() %}

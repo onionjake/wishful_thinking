@@ -158,10 +158,33 @@ pub struct ListFormPage {
     pub error: Option<String>,
 }
 
+/// One option of a month picker.
+pub struct MonthOption {
+    pub value: String,
+    pub label: String,
+    pub selected: bool,
+}
+
+/// The next two years of months (further if needed to include `selected`).
+pub fn month_options(selected: Option<time::Date>) -> Vec<MonthOption> {
+    let mut d = crate::util::this_month();
+    let mut out = Vec::new();
+    while out.len() < 24 || selected.is_some_and(|s| d <= s) {
+        out.push(MonthOption {
+            value: crate::util::month_value(d),
+            label: crate::util::pretty_month(d),
+            selected: Some(d) == selected,
+        });
+        d = crate::util::next_month(d);
+    }
+    out
+}
+
 /// One item as shown on a list page, with the reservation details the viewer may see.
 pub struct ItemView {
     pub item: Item,
-    /// Reservations visible to this viewer (empty when hidden to keep the surprise).
+    /// Reservations visible to this viewer. For editors of a surprise list, only the ones
+    /// whose reveal month has arrived.
     pub claims: Vec<Claim>,
     /// The viewer's own reservation, if any.
     pub my_claim: Option<Claim>,
@@ -195,9 +218,31 @@ pub struct ListPage {
     pub public_url: Option<String>,
     pub guest_name: String,
     pub sort: String,
+    /// Months a gift-giver can pick for when the owner may see the reservation.
+    pub reveal_options: Vec<MonthOption>,
 }
 
 impl ListPage {
+    /// Gift-givers choose a reveal month unless the owner already sees reservations.
+    pub fn asks_reveal(&self) -> bool {
+        !self.list.show_claims_to_owner
+    }
+    /// Who the gifts are for, as gift-givers would say it.
+    pub fn recipient_label(&self) -> &str {
+        self.list.recipient_name.as_deref().unwrap_or_else(|| {
+            self.owner_name
+                .split_whitespace()
+                .next()
+                .unwrap_or(&self.owner_name)
+        })
+    }
+    /// Wishes whose giver's reveal month has passed, shown to an editor of a surprise list.
+    pub fn revealed_count(&self) -> usize {
+        if self.claims_visible {
+            return 0;
+        }
+        self.items.iter().filter(|iv| !iv.claims.is_empty()).count()
+    }
     pub fn countdown(&self) -> Option<String> {
         self.list.countdown()
     }
@@ -367,6 +412,10 @@ pub struct ReservationView {
     pub claim_id: i64,
     pub quantity: i64,
     pub purchased: bool,
+    /// The list hides reservations from its owner, so the reveal month matters.
+    pub surprise: bool,
+    pub reveal_on: Option<String>,
+    pub reveal_options: Vec<MonthOption>,
     pub item: Item,
     pub list_id: i64,
     pub list_title: String,
@@ -375,6 +424,9 @@ pub struct ReservationView {
 }
 
 impl ReservationView {
+    pub fn revealed(&self) -> bool {
+        crate::util::is_revealed(self.reveal_on.as_deref())
+    }
     pub fn countdown(&self) -> Option<String> {
         self.event_date.as_deref().and_then(crate::util::countdown)
     }

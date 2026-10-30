@@ -224,6 +224,10 @@ legend { font-weight: 700; padding: 0 6px; }
 .claim-form { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .claim-form input { width: 130px; padding: 6px 10px; font-size: .875rem; }
 .claim-form select { width: auto; padding: 6px 8px; font-size: .875rem; }
+.reveal-pick { flex-direction: row; align-items: center; gap: 6px; font-weight: 400; font-size: .8rem; color: var(--muted); flex-wrap: wrap; }
+.reveal-form { margin: 2px 0 0; }
+.reveal-form label { flex-direction: row; align-items: center; gap: 6px; font-weight: 400; font-size: inherit; flex-wrap: wrap; }
+.reveal-form select { width: auto; padding: 2px 6px; font-size: .8rem; }
 .prio { font-size: .72rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; border-radius: 6px; padding: 2px 7px; }
 .prio-1 { background: var(--brand); color: #fff; }
 .prio-2 { background: #ffe3a3; color: #7a4f00; }

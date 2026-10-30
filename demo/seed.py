@@ -11,6 +11,7 @@ import re
 import sys
 import urllib.parse
 import urllib.request
+from datetime import date
 
 BASE = sys.argv[1].rstrip("/") if len(sys.argv) > 1 else "http://127.0.0.1:3000"
 PASSWORD = "wishful-demo"
@@ -136,22 +137,23 @@ add(david, dlist, HOME, "headphones", "Wireless Noise-Cancelling Headphones", "1
 for lst in (maya, leo):
     sarah.post(f"/lists/{lst}/managers", {"user_id": "2"})
 
-# Reservations.
+# Reservations. Givers pick when the list owner may see them: the January after Christmas.
+REVEAL = {"reveal_month": f"{date.today().year + 1}-01"}
 m = item_ids(jo, maya)
-jo.post(f"/items/{m['Build-a-Bot Coding Robot Kit']}/claim")
-jo.post(f"/items/{m['First Telescope for Young Astronomers']}/claim")
-ben.post(f"/items/{m['Double-Sided Art Easel']}/claim")
+jo.post(f"/items/{m['Build-a-Bot Coding Robot Kit']}/claim", REVEAL)
+jo.post(f"/items/{m['First Telescope for Young Astronomers']}/claim", REVEAL)
+ben.post(f"/items/{m['Double-Sided Art Easel']}/claim", REVEAL)
 l = item_ids(jo, leo)
-jo.post(f"/items/{l['Jurassic Dinosaur Figure Set (12)']}/claim")
-ben.post(f"/items/{l['Snuggly Fox Plush, Large']}/claim", {"quantity": "1"})
+jo.post(f"/items/{l['Jurassic Dinosaur Figure Set (12)']}/claim", REVEAL)
+ben.post(f"/items/{l['Snuggly Fox Plush, Large']}/claim", {**REVEAL, "quantity": "1"})
 s = item_ids(jo, mine)
-jo.post(f"/items/{s['Chunky Knit Throw Blanket, Oatmeal']}/claim")
+jo.post(f"/items/{s['Chunky Knit Throw Blanket, Oatmeal']}/claim", REVEAL)
 shoes = s["Cloudstride Running Shoes, Women's"]
 novel = s["The Lighthouse Keeper's Daughter (Hardcover)"]
-david.post(f"/items/{shoes}/claim")
-priya.post(f"/items/{novel}/claim")
+david.post(f"/items/{shoes}/claim", REVEAL)
+priya.post(f"/items/{novel}/claim", REVEAL)
 d = item_ids(sarah, dlist)
-sarah.post(f"/items/{d['Enameled Cast Iron Dutch Oven, 5.5 qt']}/claim")
+sarah.post(f"/items/{d['Enameled Cast Iron Dutch Oven, 5.5 qt']}/claim", REVEAL)
 
 # Grandma has already bought one gift.
 _, _, page = jo.get("/reservations")
