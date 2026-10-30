@@ -116,6 +116,11 @@ fn id_from_location(loc: &str, prefix: &str) -> i64 {
 }
 
 /// Pull the invite token out of a family page.
+/// "YYYY" for a year this many years from now.
+fn year_from_now(years: i32) -> i32 {
+    time::OffsetDateTime::now_utc().date().year() + years
+}
+
 fn invite_token(body: &str) -> String {
     let start = body.find("/join/").expect("invite link on page") + "/join/".len();
     body[start..]
@@ -209,13 +214,16 @@ async fn family_sharing_and_secret_reservations() {
     .await;
     let token = invite_token(&mom.get(&format!("/families/{family_id}")).await.body);
 
+    let next_year = year_from_now(1);
+    let event_date = format!("{next_year}-05-01");
+    let june = format!("{next_year}-06");
     let r = mom
         .post(
             "/lists",
             &[
                 ("title", "Maya's Birthday"),
                 ("recipient_name", "Maya"),
-                ("event_date", "2030-05-01"),
+                ("event_date", &event_date),
                 ("families", &family_id.to_string()),
             ],
         )
@@ -287,13 +295,27 @@ async fn family_sharing_and_secret_reservations() {
         let idx = page.find("/items/").unwrap() + "/items/".len();
         page[idx..].split('/').next().unwrap().parse().unwrap()
     };
+    // The picker suggests the month after the occasion (the list's date is May 1).
+    let june_option = format!(r#"<option value="{june}" selected>June {next_year}</option>"#);
+    assert!(page.contains(&june_option));
+    // Reserving without saying when Mom may find out is refused.
     let r = grandma.post(&format!("/items/{robot_id}/claim"), &[]).await;
     assert_eq!(r.status, StatusCode::SEE_OTHER);
     assert!(grandma
-        .get("/reservations")
+        .get(&format!("/lists/{list_id}"))
         .await
         .body
-        .contains("Robot kit"));
+        .contains("Please pick the month"));
+    let r = grandma
+        .post(
+            &format!("/items/{robot_id}/claim"),
+            &[("reveal_month", &june)],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    let shopping = grandma.get("/reservations").await.body;
+    assert!(shopping.contains("Robot kit"));
+    assert!(shopping.contains(&june_option));
 
     // Mom does not see the reservation (surprise preserved)...
     let page = mom.get(&format!("/lists/{list_id}")).await.body;
@@ -314,6 +336,58 @@ async fn family_sharing_and_secret_reservations() {
         .await
         .body
         .contains("Reserved by Grandma"));
+
+    // Once she turns it back off, nothing is revealed before June.
+    mom.post(
+        &format!("/lists/{list_id}/edit"),
+        &[("title", "Maya's Birthday"), ("recipient_name", "Maya")],
+    )
+    .await;
+    assert!(!mom
+        .get(&format!("/lists/{list_id}"))
+        .await
+        .body
+        .contains("Grandma"));
+    // Grandma can change the month from her shopping list; once it arrives, Mom sees who gave it.
+    let claim_id: i64 = {
+        let idx = shopping.find("/claims/").unwrap() + "/claims/".len();
+        shopping[idx..].split('/').next().unwrap().parse().unwrap()
+    };
+    let today = time::OffsetDateTime::now_utc().date();
+    let this_month = format!("{:04}-{:02}", today.year(), u8::from(today.month()));
+    let r = grandma
+        .post(
+            &format!("/claims/{claim_id}/reveal"),
+            &[("reveal_month", &this_month), ("back", "/reservations")],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    assert!(grandma
+        .get("/reservations")
+        .await
+        .body
+        .contains("Maya can see this now"));
+    let page = mom.get(&format!("/lists/{list_id}")).await.body;
+    assert!(page.contains("From Grandma"));
+    // Nobody else can change Grandma's reservation.
+    assert_eq!(
+        mom.post(
+            &format!("/claims/{claim_id}/reveal"),
+            &[("reveal_month", &this_month)]
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    mom.post(
+        &format!("/lists/{list_id}/edit"),
+        &[
+            ("title", "Maya's Birthday"),
+            ("recipient_name", "Maya"),
+            ("show_claims_to_owner", "1"),
+        ],
+    )
+    .await;
 
     // A second claim on a single-quantity item is refused.
     let r = mom.post(&format!("/items/{robot_id}/claim"), &[]).await;
@@ -371,7 +445,11 @@ async fn public_link_guest_reservation() {
     let r = guest
         .post(
             &format!("/p/{token}/items/{item_id}/claim"),
-            &[("guest_name", "Jamie"), ("quantity", "1")],
+            &[
+                ("guest_name", "Jamie"),
+                ("quantity", "1"),
+                ("reveal_month", &format!("{}-01", year_from_now(1))),
+            ],
         )
         .await;
     assert_eq!(r.status, StatusCode::SEE_OTHER);
@@ -454,4 +532,68 @@ async fn cross_site_posts_are_blocked() {
         .body(Body::from("title=Hacked"))
         .unwrap();
     assert_eq!(c.send(req).await.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn reservations_are_revealed_in_the_chosen_month() {
+    let app = test_app().await;
+    let mut alex = Client::new(&app);
+    alex.signup("Alex Kim", "alex@example.com").await;
+    let r = alex.post("/lists", &[("title", "Christmas")]).await;
+    let list_id = id_from_location(r.location.as_deref().unwrap(), "/lists/");
+    for title in ["Scarf", "Board game"] {
+        alex.post(&format!("/lists/{list_id}/items"), &[("title", title)])
+            .await;
+    }
+    alex.post(&format!("/lists/{list_id}/public"), &[("action", "enable")])
+        .await;
+    let share = alex.get(&format!("/lists/{list_id}/share")).await.body;
+    let start = share.find("/p/").unwrap() + 3;
+    let token: String = share[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+
+    let mut guest = Client::new(&app);
+    let page = guest.get(&format!("/p/{token}")).await.body;
+    assert!(page.contains("Alex can see it"));
+    let ids: Vec<i64> = page
+        .match_indices("/items/")
+        .map(|(i, _)| page[i + 7..].split('/').next().unwrap().parse().unwrap())
+        .collect();
+    let this_month = {
+        let today = time::OffsetDateTime::now_utc().date();
+        format!("{:04}-{:02}", today.year(), u8::from(today.month()))
+    };
+    // A gift given already (reveal this month), and one still secret.
+    let next_january = format!("{}-01", year_from_now(1));
+    for (id, month) in [(ids[0], &this_month), (ids[1], &next_january)] {
+        let r = guest
+            .post(
+                &format!("/p/{token}/items/{id}/claim"),
+                &[("guest_name", "Jamie"), ("reveal_month", month)],
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::SEE_OTHER);
+    }
+    let page = guest.get(&format!("/p/{token}")).await.body;
+    assert_eq!(page.matches("You're getting this").count(), 2);
+    // A month in the past is refused.
+    let mut guest2 = Client::new(&app);
+    guest2
+        .post(
+            &format!("/p/{token}/items/{}/claim", ids[1]),
+            &[("guest_name", "Sam"), ("reveal_month", "2001-01")],
+        )
+        .await;
+    assert!(guest2
+        .get(&format!("/p/{token}"))
+        .await
+        .body
+        .contains("pick a month from the list"));
+
+    let page = alex.get(&format!("/lists/{list_id}")).await.body;
+    assert!(page.contains("From Jamie"));
+    assert_eq!(page.matches("From Jamie").count(), 1);
+    assert!(page.contains("1 wish has been given to you"));
 }

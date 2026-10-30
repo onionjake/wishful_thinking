@@ -7,7 +7,7 @@ use serde::Deserialize;
 use crate::auth::{self, redirect_flash};
 use crate::db::{self, Access, User, Wishlist};
 use crate::error::{AppError, AppResult};
-use crate::templates::{render, Ctx, ItemView, ListFormPage, ListPage, SharePage};
+use crate::templates::{month_options, render, Ctx, ItemView, ListFormPage, ListPage, SharePage};
 use crate::util;
 use crate::AppState;
 
@@ -325,14 +325,16 @@ pub async fn build_list_page(
     let can_claim = claims_visible && (me.is_some() || public_view);
 
     let mut items = db::items_for_list(&state.db, list.id).await?;
-    let claims = if claims_visible {
-        db::claims_for_list(&state.db, list.id).await?
-    } else {
-        vec![]
-    };
+    let mut claims = db::claims_for_list(&state.db, list.id).await?;
     if !claims_visible {
+        // Editors only learn about a gift once its giver's reveal month arrives.
+        claims.retain(db::Claim::is_revealed);
         for it in &mut items {
-            it.claimed_qty = 0;
+            it.claimed_qty = claims
+                .iter()
+                .filter(|c| c.item_id == it.id)
+                .map(|c| c.quantity)
+                .sum();
         }
     }
     let sort = sort.unwrap_or_else(|| "priority".into());
@@ -402,7 +404,15 @@ pub async fn build_list_page(
         .as_ref()
         .map(|t| state.absolute(&ctx.base_url, &format!("/p/{t}")));
     let guest_name = String::new();
+    // Suggest the month after the occasion, e.g. January for Christmas.
+    let default_reveal = list
+        .event_date
+        .as_deref()
+        .and_then(util::parse_date)
+        .filter(|d| *d >= util::today())
+        .map(util::next_month);
     Ok(ListPage {
+        reveal_options: month_options(default_reveal),
         owner_name,
         is_editor,
         is_owner: access == Access::Owner,

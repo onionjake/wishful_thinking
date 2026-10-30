@@ -68,6 +68,47 @@ pub fn pretty_date(date: &str) -> String {
     }
 }
 
+/// The first day of the month a month picker value ("2027-01") names.
+pub fn parse_month(s: &str) -> Option<time::Date> {
+    let (y, m) = s.trim().split_once('-')?;
+    let month = time::Month::try_from(m.parse::<u8>().ok()?).ok()?;
+    time::Date::from_calendar_date(y.parse().ok()?, month, 1).ok()
+}
+
+/// The first day of the month after `d`'s.
+pub fn next_month(d: time::Date) -> time::Date {
+    let year = if d.month() == time::Month::December {
+        d.year() + 1
+    } else {
+        d.year()
+    };
+    time::Date::from_calendar_date(year, d.month().next(), 1).unwrap_or(d)
+}
+
+pub fn this_month() -> time::Date {
+    today().replace_day(1).unwrap_or_else(|_| today())
+}
+
+/// A reveal month a gift-giver may pick: this month (shows right away) up to five years out.
+pub fn reveal_month(s: &str) -> Option<time::Date> {
+    parse_month(s).filter(|d| *d >= this_month() && d.year() <= today().year() + 5)
+}
+
+/// Whether a reservation's reveal date (`YYYY-MM-DD`) has arrived. No date means never.
+pub fn is_revealed(reveal_on: Option<&str>) -> bool {
+    reveal_on.and_then(parse_date).is_some_and(|d| d <= today())
+}
+
+/// "2027-01", the value of a month picker option.
+pub fn month_value(d: time::Date) -> String {
+    format!("{:04}-{:02}", d.year(), u8::from(d.month()))
+}
+
+/// "January 2027".
+pub fn pretty_month(d: time::Date) -> String {
+    format!("{} {}", d.month(), d.year())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,5 +126,18 @@ mod tests {
         let a = random_token(24);
         assert_eq!(a.len(), 32);
         assert_ne!(a, random_token(24));
+    }
+
+    #[test]
+    fn months() {
+        let jan = parse_month("2027-01").unwrap();
+        assert_eq!(jan.to_string(), "2027-01-01");
+        assert_eq!(month_value(jan), "2027-01");
+        assert_eq!(pretty_month(jan), "January 2027");
+        assert_eq!(next_month(parse_date("2026-12-25").unwrap()), jan);
+        assert_eq!(parse_month("2027-13"), None);
+        assert_eq!(parse_month("soon"), None);
+        assert!(reveal_month(&month_value(this_month())).is_some());
+        assert!(reveal_month("2001-01").is_none());
     }
 }

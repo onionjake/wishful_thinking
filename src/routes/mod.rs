@@ -61,6 +61,7 @@ pub fn router(state: AppState) -> Router {
         .route("/items/{id}/claim", post(items::claim_item))
         .route("/claims/{id}/delete", post(items::unclaim))
         .route("/claims/{id}/purchased", post(items::toggle_purchased))
+        .route("/claims/{id}/reveal", post(items::set_reveal))
         .route("/p/{token}/items/{id}/claim", post(items::public_claim))
         .route("/p/{token}/claims/{id}/delete", post(items::public_unclaim))
         .route("/reservations", get(items::reservations))

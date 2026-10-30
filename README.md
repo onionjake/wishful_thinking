@@ -9,7 +9,9 @@ Wish lists for the whole family, written in Rust with SQLite.
 - **Sharing.** Each list can be shared with any of your families, and can also have an optional
   **public link** with a 144-bit random token. You can regenerate or turn off the link at any time.
 - **Secret reservations.** Gift-givers tap *I'll get this* and everyone else sees the item is taken, but the
-  list owner never sees it. For lists you run for someone else (like a child's), turn on
+  list owner doesn't see it. When reserving, the giver picks the month the owner may find out (the
+  month after the occasion is suggested, e.g. January for Christmas), so months later the owner can see
+  what they were given and by whom. For lists you run for someone else (like a child's), turn on
   *Show me what's been reserved*. Guests on a public link reserve with just their name.
 - **Shopping list.** One page shows every gift you've promised, the total still to buy, and *Mark bought*.
 - **Import from any URL.** Paste a product link and the name, price, currency, photo and store are filled in.
@@ -97,7 +99,7 @@ cargo run --example import -- https://www.allbirds.com/products/mens-tree-runner
 - The importer blocks private, loopback and link-local addresses (including after DNS resolution and
   redirects), caps response size, and times out slow sites.
 - Reservation details are filtered on the server. A list owner's page never contains who reserved what
-  unless the list opts in.
+  unless the list opts in or the giver's chosen reveal month has arrived.
 
 ## Development
 
