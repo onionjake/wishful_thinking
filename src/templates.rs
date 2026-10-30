@@ -3,7 +3,7 @@
 use askama::Template;
 use axum::response::{Html, IntoResponse, Response};
 
-use crate::db::{Claim, EventDate, FamilySummary, Item, ListSummary, Member, User, Wishlist};
+use crate::db::{Claim, EventDate, FamilySummary, Gift, Item, ListSummary, Member, User, Wishlist};
 use crate::error::AppError;
 use crate::importer::ImportOutcome;
 
@@ -439,6 +439,26 @@ pub struct ReservationsPage {
     pub to_buy: Vec<ReservationView>,
     pub purchased: Vec<ReservationView>,
     pub total_to_buy: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "history.html")]
+pub struct HistoryPage {
+    pub ctx: Ctx,
+    pub q: String,
+    /// Gifts in the whole history, before searching.
+    pub total: usize,
+    /// (recipient, their gifts, newest first)
+    pub groups: Vec<(String, Vec<Gift>)>,
+}
+
+#[derive(Template)]
+#[template(path = "list_import.html")]
+pub struct ListImportPage {
+    pub ctx: Ctx,
+    pub list: Wishlist,
+    pub url: String,
+    pub error: Option<String>,
 }
 
 #[derive(Template)]

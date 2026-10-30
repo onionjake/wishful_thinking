@@ -4,6 +4,7 @@
 //! heuristics → optionally ask an LLM to fill gaps or clean up → merge, trusting structured
 //! data over model output.
 
+pub mod amazon_list;
 pub mod extract;
 pub mod fetch;
 pub mod llm;

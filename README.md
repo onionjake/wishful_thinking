@@ -14,8 +14,12 @@ Wish lists for the whole family, written in Rust with SQLite.
   what they were given and by whom. For lists you run for someone else (like a child's), turn on
   *Show me what's been reserved*. Guests on a public link reserve with just their name.
 - **Shopping list.** One page shows every gift you've promised, the total still to buy, and *Mark bought*.
+- **Gift history.** Everything you've marked bought, grouped by who it was for and searchable, so you can
+  look up who a gift is for. It keeps its own copy of each gift, so it survives the list being changed or deleted.
 - **Import from any URL.** Paste a product link and the name, price, currency, photo and store are filled in.
   An LLM can optionally help with pages that have no structured data (see below).
+- **Import an Amazon wish list.** Paste the link to a public or shared list and every item is copied over,
+  including its comment, priority and quantity. Importing again only adds what's new.
 - Also included: priorities (*Most wanted / Would love / Nice to have*), quantities ("wants 2"), list
   co-managers (e.g. both parents), *Got it ✓* for received gifts, copying or moving items between lists,
   sorting, archiving, a browser bookmarklet, dark mode, and a mobile layout.
@@ -119,7 +123,7 @@ src/
   db.rs               SQLite pool, models, shared queries, access control
   auth.rs             passwords, sessions, flash messages, CSRF check
   routes/             account, lists, items (+ reservations, import API), families, pages
-  importer/           fetch (SSRF-safe), extract (structured data), price, llm, orchestration
+  importer/           fetch (SSRF-safe), extract (structured data), price, llm, amazon_list, orchestration
   templates.rs        Askama template contexts
 templates/            HTML templates
 static/               CSS, a little progressive-enhancement JS, favicon

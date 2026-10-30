@@ -597,3 +597,258 @@ async fn reservations_are_revealed_in_the_chosen_month() {
     assert_eq!(page.matches("From Jamie").count(), 1);
     assert!(page.contains("1 wish has been given to you"));
 }
+
+/// Sign up, create a list with one priced item, share it into a new family and bring in a second
+/// person who can reserve from it. Returns (owner, buyer, list id, item id).
+async fn family_with_item(app: &Router) -> (Client, Client, i64, i64) {
+    let mut owner = Client::new(app);
+    owner.signup("Grandpa Joe", "joe@example.com").await;
+    let fam = owner.post("/families", &[("name", "The Joes")]).await;
+    let fam_id = id_from_location(&fam.location.unwrap(), "/families/");
+    owner
+        .post(&format!("/families/{fam_id}/invites"), &[("expires", "")])
+        .await;
+    let token = invite_token(&owner.get(&format!("/families/{fam_id}")).await.body);
+    let list = owner
+        .post(
+            "/lists",
+            &[
+                ("title", "Birthday"),
+                ("families", fam_id.to_string().as_str()),
+            ],
+        )
+        .await;
+    let list_id = id_from_location(&list.location.unwrap(), "/lists/");
+    owner
+        .post(
+            &format!("/lists/{list_id}/items"),
+            &[("title", "Fishing rod"), ("price", "40.00")],
+        )
+        .await;
+    let page = owner.get(&format!("/lists/{list_id}")).await.body;
+    let start = page.find("id=\"item-").unwrap() + "id=\"item-".len();
+    let item_id: i64 = page[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap();
+    let mut buyer = Client::new(app);
+    buyer.signup("Mom", "mom@example.com").await;
+    buyer.post(&format!("/join/{token}"), &[]).await;
+    (owner, buyer, list_id, item_id)
+}
+
+/// Pull a claim id for one of the viewer's reservations out of the shopping list.
+fn claim_id(body: &str) -> i64 {
+    let start = body.find("/claims/").expect("claim on page") + "/claims/".len();
+    body[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn gift_history_outlives_the_list_and_stays_private() {
+    let app = test_app().await;
+    let (mut owner, mut buyer, list_id, item_id) = family_with_item(&app).await;
+    buyer
+        .post(
+            &format!("/items/{item_id}/claim"),
+            &[("reveal_month", &format!("{}-01", year_from_now(1)))],
+        )
+        .await;
+
+    // Reserving alone isn't buying.
+    assert!(buyer
+        .get("/history")
+        .await
+        .body
+        .contains("Nothing here yet"));
+
+    let claim = claim_id(&buyer.get("/reservations").await.body);
+    buyer.post(&format!("/claims/{claim}/purchased"), &[]).await;
+    let history = buyer.get("/history").await.body;
+    assert!(history.contains("Fishing rod"));
+    assert!(history.contains("For Grandpa Joe"));
+    assert!(history.contains("Birthday"));
+
+    // Undoing the purchase takes it back out.
+    buyer.post(&format!("/claims/{claim}/purchased"), &[]).await;
+    assert!(!buyer.get("/history").await.body.contains("Fishing rod"));
+    buyer.post(&format!("/claims/{claim}/purchased"), &[]).await;
+
+    // The list owner can't see it, on the history page or by guessing a delete.
+    assert!(!owner.get("/history").await.body.contains("Fishing rod"));
+    let page = buyer.get("/history").await.body;
+    let start = page.find("/history/").unwrap() + "/history/".len();
+    let gift: String = page[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    let r = owner.post(&format!("/history/{gift}/delete"), &[]).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+
+    // Search finds gifts by name and by person.
+    assert!(buyer
+        .get("/history?q=FISHING")
+        .await
+        .body
+        .contains("Fishing rod"));
+    assert!(buyer
+        .get("/history?q=grandpa")
+        .await
+        .body
+        .contains("Fishing rod"));
+    assert!(buyer
+        .get("/history?q=socks")
+        .await
+        .body
+        .contains("No gifts match"));
+
+    // It survives the owner renaming the item and then deleting the whole list.
+    owner
+        .post(&format!("/items/{item_id}/edit"), &[("title", "Renamed")])
+        .await;
+    owner.post(&format!("/lists/{list_id}/delete"), &[]).await;
+    let history = buyer.get("/history").await.body;
+    assert!(history.contains("Fishing rod"));
+    assert!(!history.contains("Renamed"));
+
+    // Buyers can tidy up detached entries themselves.
+    buyer.post(&format!("/history/{gift}/delete"), &[]).await;
+    assert!(!buyer.get("/history").await.body.contains("Fishing rod"));
+}
+
+#[tokio::test]
+async fn releasing_a_bought_gift_removes_it_from_history() {
+    let app = test_app().await;
+    let (_owner, mut buyer, _list_id, item_id) = family_with_item(&app).await;
+    buyer
+        .post(
+            &format!("/items/{item_id}/claim"),
+            &[("reveal_month", &format!("{}-01", year_from_now(1)))],
+        )
+        .await;
+    let claim = claim_id(&buyer.get("/reservations").await.body);
+    buyer.post(&format!("/claims/{claim}/purchased"), &[]).await;
+    assert!(buyer.get("/history").await.body.contains("Fishing rod"));
+    buyer.post(&format!("/claims/{claim}/delete"), &[]).await;
+    assert!(!buyer.get("/history").await.body.contains("Fishing rod"));
+}
+
+const AMAZON_PAGE_1: &str = r#"<html><head><title>Amazon.com</title></head><body>
+  <span id="profile-list-name">Birthday ideas</span>
+  <ul id="g-items">
+    <li data-itemId="I1" data-price="12.50" data-reposition-action-params="{&quot;itemExternalId&quot;:&quot;ASIN:B000000001|X&quot;}">
+      <a id="itemName_I1" title="Kite" href="/dp/B000000001/?coliid=I1"></a>
+      <span id="itemPrice_I1" class="a-price"><span class="a-offscreen">$12.50</span></span>
+      <span id="itemPriority_I1">2</span><span id="itemRequested_I1">2</span><span id="itemPurchased_I1">0</span>
+    </li>
+    <li data-itemId="I2" data-reposition-action-params="{&quot;itemExternalId&quot;:&quot;ASIN:B000000002|X&quot;}">
+      <a id="itemName_I2" title="Already bought" href="/dp/B000000002/"></a>
+      <span id="itemRequested_I2">1</span><span id="itemPurchased_I2">1</span>
+    </li>
+  </ul>
+  <a class="wl-see-more" href="/hz/wishlist/slv/items?paginationToken=2">See more</a>
+</body></html>"#;
+
+const AMAZON_PAGE_2: &str = r#"<li data-itemId="I3" data-reposition-action-params="{&quot;itemExternalId&quot;:&quot;ASIN:B000000003|X&quot;}">
+    <a aria-label="Yo-yo" href="/dp/B000000003/"><img alt="Yo-yo" src="/images/I/yoyo._SS135_.jpg"></a>
+    <span class="a-price"><span class="a-offscreen">$3.00</span></span>
+  </li><div id="endOfListMarker"></div>"#;
+
+async fn fake_amazon() -> String {
+    let app = Router::new()
+        .route(
+            "/hz/wishlist/ls/L1",
+            axum::routing::get(|| async { axum::response::Html(AMAZON_PAGE_1) }),
+        )
+        .route(
+            "/hz/wishlist/slv/items",
+            axum::routing::get(|| async { axum::response::Html(AMAZON_PAGE_2) }),
+        )
+        .route(
+            "/hz/wishlist/ls/dead",
+            axum::routing::get(|| async {
+                axum::response::Html("<title>Amazon.com</title>not a functioning page")
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn amazon_list_import_walks_pages_and_skips_duplicates() {
+    let app = test_app().await;
+    let amazon = fake_amazon().await;
+    let mut c = Client::new(&app);
+    c.signup("Sam", "sam@example.com").await;
+    let list = c.post("/lists", &[("title", "Wishes")]).await;
+    let list_id = id_from_location(&list.location.unwrap(), "/lists/");
+    let import = format!("/lists/{list_id}/import");
+    let link = format!("{amazon}/hz/wishlist/ls/L1");
+
+    let r = c.post(&import, &[("url", &link)]).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.body);
+    let page = c.get(&format!("/lists/{list_id}")).await.body;
+    assert!(page.contains("Added 2 wishes from Amazon."), "{page}");
+    assert!(page.contains("Left out 1 already bought"));
+    assert!(page.contains("Kite") && page.contains("Yo-yo"));
+    assert!(!page.contains("Already bought"));
+    assert!(page.contains("wants 2"));
+    assert!(page.contains("Most wanted"));
+    assert!(!page.contains("coliid"), "tracking parameters are stripped");
+
+    // Importing again adds nothing.
+    c.post(&import, &[("url", &link)]).await;
+    let page = c.get(&format!("/lists/{list_id}")).await.body;
+    assert!(page.contains("Added 0 wishes from Amazon. 2 already on this list."));
+    assert_eq!(page.matches("id=\"item-").count(), 2);
+
+    // A dead or private list explains itself and adds nothing.
+    let r = c
+        .post(
+            &import,
+            &[("url", &format!("{amazon}/hz/wishlist/ls/dead"))],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body.contains("Public or Shared"));
+}
+
+#[tokio::test]
+async fn amazon_list_import_only_fetches_amazon() {
+    let config = Config {
+        allow_private_fetch: false,
+        ..Config::for_tests()
+    };
+    let app = app(AppState::new(config).await.unwrap());
+    let mut c = Client::new(&app);
+    c.signup("Sam", "sam@example.com").await;
+    let list = c.post("/lists", &[("title", "Wishes")]).await;
+    let list_id = id_from_location(&list.location.unwrap(), "/lists/");
+    let import = format!("/lists/{list_id}/import");
+    for bad in [
+        "https://example.com/hz/wishlist/ls/L1",
+        "https://amazon.evil.example/hz/wishlist/ls/L1",
+        "not a link",
+    ] {
+        let r = c.post(&import, &[("url", bad)]).await;
+        assert!(
+            r.body.contains("look like an Amazon wish list"),
+            "{bad}: {}",
+            r.body
+        );
+    }
+
+    // Other people can't import into your list.
+    let mut other = Client::new(&app);
+    other.signup("Pat", "pat@example.com").await;
+    let r = other.post(&import, &[("url", "https://a.co/d/x")]).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+}

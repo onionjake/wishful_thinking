@@ -270,6 +270,35 @@ pub async fn claims_for_list(db: &Db, list_id: i64) -> sqlx::Result<Vec<Claim>> 
     .await
 }
 
+/// A gift someone bought, as it was when they marked it bought.
+#[derive(Clone, Debug, FromRow)]
+pub struct Gift {
+    pub id: i64,
+    pub title: String,
+    pub url: Option<String>,
+    pub image_url: Option<String>,
+    pub price_cents: Option<i64>,
+    pub currency: String,
+    pub quantity: i64,
+    pub recipient: String,
+    pub occasion: String,
+    pub purchased_at: String,
+}
+
+impl Gift {
+    pub fn price_display(&self) -> Option<String> {
+        self.price_cents.map(|c| price::format(c, &self.currency))
+    }
+    pub fn purchased_on(&self) -> String {
+        util::pretty_date(self.purchased_at.get(..10).unwrap_or(&self.purchased_at))
+    }
+    pub fn matches(&self, query: &str) -> bool {
+        [&self.title, &self.recipient, &self.occasion]
+            .iter()
+            .any(|field| field.to_lowercase().contains(query))
+    }
+}
+
 #[derive(Clone, Debug, FromRow)]
 pub struct Family {
     pub id: i64,

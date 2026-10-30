@@ -6,13 +6,13 @@ use axum::{Form, Json};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{self, redirect_flash};
-use crate::db::{self, Access, Item, Wishlist};
+use crate::db::{self, Access, Gift, Item, Wishlist};
 use crate::error::{AppError, AppResult};
-use crate::importer::{price, ImportOutcome};
+use crate::importer::{amazon_list, price, ImportOutcome};
 use crate::routes::lists::editable_list;
 use crate::templates::{
-    month_options, render, AddPage, Ctx, ItemFormPage, ItemFormValues, ReservationView,
-    ReservationsPage,
+    month_options, render, AddPage, Ctx, HistoryPage, ItemFormPage, ItemFormValues, ListImportPage,
+    ReservationView, ReservationsPage,
 };
 use crate::util;
 use crate::AppState;
@@ -505,6 +505,12 @@ async fn insert_claim(
         .bind(claim_id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query(
+            "UPDATE gift_history SET quantity = (SELECT quantity FROM claims WHERE id = ?1) WHERE claim_id = ?1",
+        )
+        .bind(claim_id)
+        .execute(&mut *tx)
+        .await?;
     } else {
         match claimer {
             Claimer::User(uid) => {
@@ -702,6 +708,22 @@ pub struct BackForm {
     back: Option<String>,
 }
 
+/// Delete a reservation at its buyer's request. A gift they say they're no longer giving leaves
+/// their history too, unlike a claim that disappears because the list owner removed the item.
+async fn release_claim(state: &AppState, claim_id: i64) -> AppResult<()> {
+    let mut tx = state.db.begin().await?;
+    sqlx::query("DELETE FROM gift_history WHERE claim_id = ?")
+        .bind(claim_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM claims WHERE id = ?")
+        .bind(claim_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 pub async fn unclaim(
     State(state): State<AppState>,
     ctx: Ctx,
@@ -713,10 +735,7 @@ pub async fn unclaim(
     if owner.user_id != Some(user.id) {
         return Err(AppError::Forbidden);
     }
-    sqlx::query("DELETE FROM claims WHERE id = ?")
-        .bind(id)
-        .execute(&state.db)
-        .await?;
+    release_claim(&state, id).await?;
     let back = f
         .back
         .map(|b| util::safe_next(Some(&b)))
@@ -746,10 +765,7 @@ pub async fn public_unclaim(
     if !mine {
         return Err(AppError::Forbidden);
     }
-    sqlx::query("DELETE FROM claims WHERE id = ?")
-        .bind(id)
-        .execute(&state.db)
-        .await?;
+    release_claim(&state, id).await?;
     Ok(redirect_flash(
         &format!("/p/{token}"),
         "ok",
@@ -768,11 +784,31 @@ pub async fn toggle_purchased(
     if owner.user_id != Some(user.id) {
         return Err(AppError::Forbidden);
     }
+    let mut tx = state.db.begin().await?;
     sqlx::query("UPDATE claims SET purchased = ? WHERE id = ?")
         .bind(!owner.purchased)
         .bind(id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
+    if owner.purchased {
+        sqlx::query("DELETE FROM gift_history WHERE claim_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    } else {
+        sqlx::query(
+            "INSERT OR IGNORE INTO gift_history (buyer_id, claim_id, title, url, image_url, price_cents, currency, store, quantity, recipient, occasion, event_date)
+             SELECT c.user_id, c.id, i.title, i.url, i.image_url, i.price_cents, i.currency, i.store, c.quantity,
+                    COALESCE(w.recipient_name, u.display_name), w.title, w.event_date
+               FROM claims c JOIN items i ON i.id = c.item_id JOIN wishlists w ON w.id = i.wishlist_id
+               JOIN users u ON u.id = w.owner_id
+              WHERE c.id = ?",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
     let back = f
         .back
         .map(|b| util::safe_next(Some(&b)))
@@ -907,6 +943,65 @@ pub async fn reservations(State(state): State<AppState>, ctx: Ctx) -> AppResult<
     })
 }
 
+// ---------------------------------------------------------------- gift history
+
+#[derive(Deserialize, Default)]
+pub struct HistoryQuery {
+    q: Option<String>,
+}
+
+pub async fn history(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Query(query): Query<HistoryQuery>,
+) -> AppResult<Response> {
+    let user = ctx.require_user()?.clone();
+    let gifts: Vec<Gift> = sqlx::query_as(
+        "SELECT id, title, url, image_url, price_cents, currency, quantity, recipient, occasion, purchased_at
+           FROM gift_history WHERE buyer_id = ? ORDER BY recipient COLLATE NOCASE, purchased_at DESC, id DESC",
+    )
+    .bind(user.id)
+    .fetch_all(&state.db)
+    .await?;
+    let total = gifts.len();
+    let q = util::non_empty(query.q.as_deref()).unwrap_or_default();
+    let needle = q.to_lowercase();
+    let mut groups: Vec<(String, Vec<Gift>)> = Vec::new();
+    for gift in gifts.into_iter().filter(|g| g.matches(&needle)) {
+        match groups.last_mut() {
+            Some((recipient, list)) if *recipient == gift.recipient => list.push(gift),
+            _ => groups.push((gift.recipient.clone(), vec![gift])),
+        }
+    }
+    render(HistoryPage {
+        ctx,
+        q,
+        total,
+        groups,
+    })
+}
+
+pub async fn delete_history(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+) -> AppResult<Response> {
+    let user = ctx.require_user()?.clone();
+    let res = sqlx::query("DELETE FROM gift_history WHERE id = ? AND buyer_id = ?")
+        .bind(id)
+        .bind(user.id)
+        .execute(&state.db)
+        .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    Ok(redirect_flash(
+        "/history",
+        "ok",
+        "Removed from your gift history.",
+    ))
+}
+
 // ---------------------------------------------------------------- import
 
 #[derive(Deserialize, Default)]
@@ -936,6 +1031,114 @@ pub async fn add_page(
         .into_response());
     }
     render(AddPage { ctx, url, lists })
+}
+
+pub async fn import_list_page(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(list_id): Path<i64>,
+) -> AppResult<Response> {
+    let (list, _, _) = editable_list(&state, &ctx, list_id).await?;
+    render(ListImportPage {
+        ctx,
+        list,
+        url: String::new(),
+        error: None,
+    })
+}
+
+#[derive(Deserialize)]
+pub struct ImportListForm {
+    url: String,
+}
+
+/// What makes two wishes the same product: the ASIN for Amazon links, otherwise the link or name.
+fn wish_key(url: Option<&str>, title: &str) -> String {
+    url.and_then(amazon_list::asin_from_url)
+        .or_else(|| url.map(str::to_string))
+        .unwrap_or_else(|| title.to_lowercase())
+}
+
+pub async fn import_list(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(list_id): Path<i64>,
+    Form(f): Form<ImportListForm>,
+) -> AppResult<Response> {
+    let (list, _, _) = editable_list(&state, &ctx, list_id).await?;
+    let imported = match state.importer.import_amazon_list(&f.url).await {
+        Ok(imported) => imported,
+        Err(e) => {
+            return render(ListImportPage {
+                ctx,
+                list,
+                url: f.url,
+                error: Some(e.to_string()),
+            })
+        }
+    };
+    let mut seen: std::collections::HashSet<String> = db::items_for_list(&state.db, list_id)
+        .await?
+        .iter()
+        .map(|i| wish_key(i.url.as_deref(), &i.title))
+        .collect();
+    let (mut added, mut duplicates) = (0, 0);
+    let mut tx = state.db.begin().await?;
+    for item in &imported.items {
+        if !seen.insert(wish_key(item.url.as_deref(), &item.title)) {
+            duplicates += 1;
+            continue;
+        }
+        sqlx::query(
+            "INSERT INTO items (wishlist_id, title, url, image_url, price_cents, currency, store, notes, priority, quantity, import_source)
+             VALUES (?, ?, ?, ?, ?, ?, 'Amazon', ?, ?, ?, 'amazon-list')",
+        )
+        .bind(list_id)
+        .bind(&item.title)
+        .bind(&item.url)
+        .bind(&item.image_url)
+        .bind(item.price_cents)
+        .bind(&item.currency)
+        .bind(&item.notes)
+        .bind(item.priority)
+        .bind(item.quantity)
+        .execute(&mut *tx)
+        .await?;
+        added += 1;
+    }
+    sqlx::query("UPDATE wishlists SET updated_at = datetime('now') WHERE id = ?")
+        .bind(list_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    if imported.items.is_empty() && imported.already_bought == 0 {
+        return render(ListImportPage {
+            ctx,
+            list,
+            url: f.url,
+            error: Some("That Amazon list opened fine, but it has no items on it.".into()),
+        });
+    }
+    let mut msg = match added {
+        1 => "Added 1 wish from Amazon.".to_string(),
+        n => format!("Added {n} wishes from Amazon."),
+    };
+    if duplicates > 0 {
+        msg.push_str(&format!(" {duplicates} already on this list."));
+    }
+    if imported.already_bought > 0 {
+        msg.push_str(&format!(
+            " Left out {} already bought on Amazon.",
+            imported.already_bought
+        ));
+    }
+    if imported.incomplete {
+        msg.push_str(
+            " Amazon stopped before the end of the list, so import again to get the rest.",
+        );
+    }
+    Ok(redirect_flash(&format!("/lists/{list_id}"), "ok", &msg))
 }
 
 #[derive(Deserialize)]

@@ -6,7 +6,7 @@
   {% if let Some(t) = total_to_buy %}<div class="stat"><span class="muted small">Still to buy</span><b>{{ t }}</b></div>{% endif %}
 </div>
 {% if to_buy.is_empty() && purchased.is_empty() %}
-<div class="empty-card"><p><b>Nothing here yet.</b> Open a family member's list and tap <b>I'll get this</b> on a gift.</p><a class="btn btn-small" href="/">Browse lists</a></div>
+<div class="empty-card"><p><b>Nothing here yet.</b> Open a family member's list and tap <b>I'll get this</b> on a gift.</p><a class="btn btn-small" href="/">Browse lists</a> <a class="btn btn-small btn-ghost" href="/history">Gift history</a></div>
 {% endif %}
 {% if !to_buy.is_empty() %}
 <h2 class="section-title">To buy</h2>
@@ -15,7 +15,7 @@
 </div>
 {% endif %}
 {% if !purchased.is_empty() %}
-<h2 class="section-title">Bought ✓</h2>
+<h2 class="section-title">Bought ✓ <a class="small" href="/history">See your full gift history →</a></h2>
 <div class="rows rows-done">
   {% for r in purchased %}{% include "_reservation_row.html" %}{% endfor %}
 </div>

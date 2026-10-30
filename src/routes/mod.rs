@@ -50,6 +50,10 @@ pub fn router(state: AppState) -> Router {
         .route("/p/{token}", get(lists::public_list))
         // items
         .route("/lists/{id}/items/new", get(items::new_item_page))
+        .route(
+            "/lists/{id}/import",
+            get(items::import_list_page).post(items::import_list),
+        )
         .route("/lists/{id}/items", post(items::create_item))
         .route(
             "/items/{id}/edit",
@@ -65,6 +69,8 @@ pub fn router(state: AppState) -> Router {
         .route("/p/{token}/items/{id}/claim", post(items::public_claim))
         .route("/p/{token}/claims/{id}/delete", post(items::public_unclaim))
         .route("/reservations", get(items::reservations))
+        .route("/history", get(items::history))
+        .route("/history/{id}/delete", post(items::delete_history))
         .route("/add", get(items::add_page))
         .route("/api/import", post(items::import_api))
         // families

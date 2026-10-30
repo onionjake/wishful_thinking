@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Gift history · Wishful Thinking{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Gift history</h1><p class="muted">Everything you've marked as bought, and who it was for. Only you can see this page.</p></div>
+  <a class="btn btn-ghost" href="/reservations">Shopping list</a>
+</div>
+{% if total == 0 %}
+<div class="empty-card"><p><b>Nothing here yet.</b> When you tap <b>✓ Mark bought</b> on a gift, it's saved here, even if the list is later changed or deleted.</p><a class="btn btn-small" href="/reservations">Go to your shopping list</a></div>
+{% else %}
+<form method="get" class="inline-form search-form">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search gifts or people" aria-label="Search your gift history">
+  <button class="btn btn-small btn-ghost" type="submit">Search</button>
+  {% if !q.is_empty() %}<a class="small" href="/history">Show all</a>{% endif %}
+</form>
+{% if groups.is_empty() %}
+<p class="muted">No gifts match “{{ q }}”.</p>
+{% endif %}
+{% for (recipient, gifts) in groups %}
+<h2 class="section-title">For {{ recipient }}</h2>
+<div class="rows">
+  {% for g in gifts %}
+  <div class="row-item">
+    <div class="row-img">{% if let Some(img) = g.image_url %}<img src="{{ img }}" alt="" loading="lazy" referrerpolicy="no-referrer">{% else %}<span>🎁</span>{% endif %}</div>
+    <div class="grow">
+      <b>{% if let Some(u) = g.url %}<a href="{{ u }}" target="_blank" rel="noopener noreferrer nofollow">{{ g.title }}</a>{% else %}{{ g.title }}{% endif %}</b>{% if g.quantity > 1 %} ×{{ g.quantity }}{% endif %}
+      <div class="muted small">{{ g.purchased_on() }} · {{ g.occasion }}</div>
+    </div>
+    {% if let Some(p) = g.price_display() %}<b class="price">{{ p }}</b>{% endif %}
+    <form method="post" action="/history/{{ g.id }}/delete"><button class="btn btn-small btn-ghost" type="submit" data-confirm-click="Remove this gift from your history?">Remove</button></form>
+  </div>
+  {% endfor %}
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

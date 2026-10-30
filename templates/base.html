@@ -22,6 +22,7 @@
           <summary><span class="avatar">{{ ctx.initials() }}</span><span class="sr-only">Account menu</span></summary>
           <div class="menu">
             <div class="menu-head">{{ user.display_name }}<small>{{ user.email }}</small></div>
+            <a href="/history">Gift history</a>
             <a href="/account">Account settings</a>
             <form method="post" action="/logout"><button class="linklike" type="submit">Sign out</button></form>
           </div>

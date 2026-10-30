@@ -26,6 +26,7 @@
   {% if is_editor %}
   <div class="list-actions">
     <a class="btn" href="/lists/{{ list.id }}/items/new">+ Add a wish</a>
+    <a class="btn btn-ghost" href="/lists/{{ list.id }}/import">Import from Amazon</a>
     <a class="btn btn-ghost" href="/lists/{{ list.id }}/share">Share</a>
     <a class="btn btn-ghost" href="/lists/{{ list.id }}/edit">Edit</a>
   </div>
@@ -50,6 +51,7 @@
   {% if is_editor %}
   <p><b>This list is empty.</b> Paste a link from any store and we'll fill in the details.</p>
   <a class="btn btn-small" href="/lists/{{ list.id }}/items/new">Add the first wish</a>
+  <a class="btn btn-small btn-ghost" href="/lists/{{ list.id }}/import">Import an Amazon wish list</a>
   {% else %}
   <p>Nothing on this list yet — check back soon.</p>
   {% endif %}
