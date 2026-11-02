@@ -437,11 +437,11 @@ pub struct ClaimForm {
     reveal_month: Option<String>,
 }
 
-/// The reveal date to store for a new reservation. Required unless the owner already sees
+/// The reveal date to store for a new reservation. Required unless nobody is kept from seeing
 /// reservations.
 fn reveal_choice(list: &Wishlist, raw: Option<&str>) -> Result<Option<String>, &'static str> {
     match util::non_empty(raw) {
-        None if list.show_claims_to_owner => Ok(None),
+        None if !list.has_secret_reservations() => Ok(None),
         None => Err("Please pick the month when it's okay for them to see this was bought."),
         Some(m) => util::reveal_month(&m)
             .map(|d| Some(d.to_string()))
@@ -541,7 +541,10 @@ async fn insert_claim(
 }
 
 /// Whether this user may reserve items on this list (and see reservations).
-fn may_claim(list: &Wishlist, access: Access) -> bool {
+fn may_claim(list: &Wishlist, access: Access, user_id: i64) -> bool {
+    if list.is_recipient(Some(user_id)) {
+        return false;
+    }
     match access {
         Access::Family => true,
         Access::Owner | Access::Manager => list.show_claims_to_owner,
@@ -563,7 +566,7 @@ pub async fn claim_item(
         .await?
         .ok_or(AppError::NotFound)?;
     let access = db::list_access(&state.db, &list, Some(user.id)).await?;
-    if !may_claim(&list, access) {
+    if !may_claim(&list, access, user.id) {
         return Err(if access.can_view() {
             AppError::Forbidden
         } else {
@@ -630,6 +633,13 @@ pub async fn public_claim(
     let claimer = match &ctx.user {
         Some(user) => {
             let access = db::list_access(&state.db, &list, Some(user.id)).await?;
+            if list.is_recipient(Some(user.id)) {
+                return Ok(redirect_flash(
+                    &back,
+                    "error",
+                    "This list is for you, so reservations are hidden from you.",
+                ));
+            }
             if access.can_edit() && !list.show_claims_to_owner {
                 return Ok(redirect_flash(
                     &back,
@@ -872,6 +882,7 @@ struct ReservationRow {
     purchased: bool,
     reveal_on: Option<String>,
     show_claims_to_owner: bool,
+    has_recipient_account: bool,
     list_id: i64,
     list_title: String,
     recipient: String,
@@ -882,7 +893,8 @@ struct ReservationRow {
 pub async fn reservations(State(state): State<AppState>, ctx: Ctx) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
     let rows: Vec<ReservationRow> = sqlx::query_as(
-        "SELECT c.id AS claim_id, c.quantity AS claim_qty, c.purchased, c.reveal_on, w.show_claims_to_owner, w.id AS list_id, w.title AS list_title,
+        "SELECT c.id AS claim_id, c.quantity AS claim_qty, c.purchased, c.reveal_on, w.show_claims_to_owner,
+                w.recipient_user_id IS NOT NULL AS has_recipient_account, w.id AS list_id, w.title AS list_title,
                 COALESCE(w.recipient_name, u.display_name) AS recipient, w.event_date, i.id AS item_id
            FROM claims c JOIN items i ON i.id = c.item_id JOIN wishlists w ON w.id = i.wishlist_id
            JOIN users u ON u.id = w.owner_id
@@ -903,7 +915,7 @@ pub async fn reservations(State(state): State<AppState>, ctx: Ctx) -> AppResult<
                 *totals.entry(item.currency.clone()).or_default() += c * r.claim_qty;
             }
         }
-        let surprise = !r.show_claims_to_owner;
+        let surprise = !r.show_claims_to_owner || r.has_recipient_account;
         let reveal_options = if surprise {
             month_options(r.reveal_on.as_deref().and_then(util::parse_date))
         } else {

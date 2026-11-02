@@ -40,6 +40,26 @@
   </section>
 
   <section class="card">
+    <h2>🙈 Who is this list for?</h2>
+    <p class="muted small">If the person this list is for has their own account (like your child), pick them here. They'll never see who's getting what — not even if they co-manage the list or see it through a family — until each gift-giver's reveal month. You can still reserve gifts yourself.</p>
+    {% if is_owner %}
+      {% if recipient_options.is_empty() %}
+      <p class="muted small">Nobody to pick yet — invite them to one of your families first.</p>
+      {% else %}
+      <form method="post" action="/lists/{{ list.id }}/recipient" class="inline-form">
+        <select name="user_id" aria-label="Who the list is for">
+          <option value="">Nobody with an account</option>
+          {% for p in recipient_options %}<option value="{{ p.id }}"{% if self.is_recipient(p.id) %} selected{% endif %}>{{ p.display_name }}</option>{% endfor %}
+        </select>
+        <button class="btn btn-small" type="submit">Save</button>
+      </form>
+      {% endif %}
+    {% else %}
+      <p class="small">{% if let Some(p) = self.recipient() %}This list is for <b>{{ p.display_name }}</b>.{% else %}Not set.{% endif %} Only the list's owner can change this.</p>
+    {% endif %}
+  </section>
+
+  <section class="card">
     <h2>🤝 Co-managers</h2>
     <p class="muted small">Co-managers can add, edit and remove items — useful when both parents look after a child's list. Pick from people in your families.</p>
     {% if !managers.is_empty() %}

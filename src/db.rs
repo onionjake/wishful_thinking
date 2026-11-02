@@ -57,6 +57,20 @@ pub struct Wishlist {
     pub public_token: Option<String>,
     pub show_claims_to_owner: bool,
     pub archived: bool,
+    /// The account the list is for, who must not see reservations (e.g. a child).
+    pub recipient_user_id: Option<i64>,
+}
+
+impl Wishlist {
+    /// Whether this user is the person the gifts are for, so reservations stay hidden from them.
+    pub fn is_recipient(&self, user_id: Option<i64>) -> bool {
+        user_id.is_some() && self.recipient_user_id == user_id
+    }
+    /// Whether a reservation must stay secret from someone until the giver's reveal month:
+    /// from the owner on a surprise list, or from the account the list is for.
+    pub fn has_secret_reservations(&self) -> bool {
+        !self.show_claims_to_owner || self.recipient_user_id.is_some()
+    }
 }
 
 pub trait EventDate {
@@ -81,7 +95,7 @@ impl EventDate for Wishlist {
 }
 
 pub const WISHLIST_COLS: &str =
-    "id, owner_id, title, recipient_name, description, event_date, public_token, show_claims_to_owner, archived";
+    "id, owner_id, title, recipient_name, description, event_date, public_token, show_claims_to_owner, archived, recipient_user_id";
 
 #[derive(Clone, Debug, FromRow)]
 pub struct ListSummary {

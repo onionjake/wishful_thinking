@@ -12,7 +12,10 @@ Wish lists for the whole family, written in Rust with SQLite.
   list owner doesn't see it. When reserving, the giver picks the month the owner may find out (the
   month after the occasion is suggested, e.g. January for Christmas), so months later the owner can see
   what they were given and by whom. For lists you run for someone else (like a child's), turn on
-  *Show me what's been reserved*. Guests on a public link reserve with just their name.
+  *Show me what's been reserved*. If the child has their own account, pick them under
+  *Share → Who is this list for?*: they never see who's getting what (not even as a co-manager or
+  family member) until each giver's reveal month, while you and everyone else still can.
+  Guests on a public link reserve with just their name.
 - **Shopping list.** One page shows every gift you've promised, the total still to buy, and *Mark bought*.
 - **Gift history.** Everything you've marked bought, grouped by who it was for and searchable, so you can
   look up who a gift is for. It keeps its own copy of each gift, so it survives the list being changed or deleted.

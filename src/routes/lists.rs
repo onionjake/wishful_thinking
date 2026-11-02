@@ -319,15 +319,17 @@ pub async fn build_list_page(
 ) -> AppResult<ListPage> {
     let me = ctx.user.as_ref().map(|u| u.id);
     let is_editor = access.can_edit();
+    // The person the list is for never sees reservations, whatever else they can do with it.
+    let is_recipient = list.is_recipient(me);
     // Editors don't see reservations unless the list opts in (e.g. a parent running a child's list).
-    let claims_visible = !is_editor || list.show_claims_to_owner;
+    let claims_visible = !is_recipient && (!is_editor || list.show_claims_to_owner);
     let claim_names_visible = claims_visible && (access != Access::None);
     let can_claim = claims_visible && (me.is_some() || public_view);
 
     let mut items = db::items_for_list(&state.db, list.id).await?;
     let mut claims = db::claims_for_list(&state.db, list.id).await?;
     if !claims_visible {
-        // Editors only learn about a gift once its giver's reveal month arrives.
+        // Editors and the recipient only learn about a gift once its giver's reveal month arrives.
         claims.retain(db::Claim::is_revealed);
         for it in &mut items {
             it.claimed_qty = claims
@@ -416,6 +418,7 @@ pub async fn build_list_page(
         owner_name,
         is_editor,
         is_owner: access == Access::Owner,
+        is_recipient,
         public_view,
         claims_visible,
         claim_names_visible,
@@ -472,6 +475,7 @@ pub async fn share_page(
     .bind(id)
     .fetch_all(&state.db)
     .await?;
+    let recipient_options = recipient_candidates(&state, &list).await?;
     let public_url = list
         .public_token
         .as_ref()
@@ -484,7 +488,82 @@ pub async fn share_page(
         public_url,
         managers,
         candidates,
+        recipient_options,
     })
+}
+
+/// People the list can be marked as being for: anyone in a family with the owner, plus
+/// co-managers, plus whoever it's already for.
+async fn recipient_candidates(state: &AppState, list: &Wishlist) -> AppResult<Vec<User>> {
+    Ok(sqlx::query_as(
+        "SELECT u.id, u.email, u.display_name FROM users u
+          WHERE u.id != ?1 AND (
+                u.id IN (SELECT b.user_id FROM family_members a
+                           JOIN family_members b ON b.family_id = a.family_id WHERE a.user_id = ?1)
+             OR u.id IN (SELECT user_id FROM wishlist_managers WHERE wishlist_id = ?2)
+             OR u.id IS ?3)
+          ORDER BY u.display_name",
+    )
+    .bind(list.owner_id)
+    .bind(list.id)
+    .bind(list.recipient_user_id)
+    .fetch_all(&state.db)
+    .await?)
+}
+
+#[derive(Deserialize)]
+pub struct RecipientForm {
+    user_id: Option<String>,
+}
+
+/// Mark the list as being for someone with an account, who then never sees reservations.
+/// Only the owner may change this, so a child who co-manages their own list can't turn it off.
+pub async fn update_recipient(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+    Form(f): Form<RecipientForm>,
+) -> AppResult<Response> {
+    let (list, access, _) = editable_list(&state, &ctx, id).await?;
+    if access != Access::Owner {
+        return Err(AppError::Forbidden);
+    }
+    let back = format!("/lists/{id}/share");
+    let chosen = match util::non_empty(f.user_id.as_deref()) {
+        None => None,
+        Some(raw) => {
+            let uid: i64 = raw
+                .parse()
+                .map_err(|_| AppError::BadRequest("Unknown person".into()))?;
+            let options = recipient_candidates(&state, &list).await?;
+            let Some(person) = options.into_iter().find(|u| u.id == uid) else {
+                return Ok(redirect_flash(
+                    &back,
+                    "error",
+                    "Pick someone from one of your families.",
+                ));
+            };
+            Some(person)
+        }
+    };
+    sqlx::query(
+        "UPDATE wishlists SET recipient_user_id = ?,
+                recipient_name = COALESCE(recipient_name, ?), updated_at = datetime('now')
+          WHERE id = ?",
+    )
+    .bind(chosen.as_ref().map(|u| u.id))
+    .bind(chosen.as_ref().map(|u| u.first_name().to_string()))
+    .bind(id)
+    .execute(&state.db)
+    .await?;
+    let msg = match &chosen {
+        Some(u) => format!(
+            "Got it. {} won't see who's getting what, even if they open this list.",
+            u.first_name()
+        ),
+        None => "This list is no longer tied to anyone's account.".to_string(),
+    };
+    Ok(redirect_flash(&back, "ok", &msg))
 }
 
 #[derive(Deserialize)]
