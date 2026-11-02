@@ -153,6 +153,8 @@ pub struct ListFormPage {
     pub description: String,
     pub event_date: String,
     pub show_claims_to_owner: bool,
+    /// Only the owner chooses "Show me what's been reserved"; co-managers have their own setting.
+    pub can_set_claims: bool,
     /// Families to share a new list with (family, pre-checked).
     pub families: Vec<(FamilySummary, bool)>,
     pub error: Option<String>,
@@ -220,12 +222,14 @@ pub struct ListPage {
     pub sort: String,
     /// Months a gift-giver can pick for when the owner may see the reservation.
     pub reveal_options: Vec<MonthOption>,
+    /// Reservations are hidden from the owner or a co-manager, so givers pick a reveal month.
+    pub secret_reservations: bool,
 }
 
 impl ListPage {
-    /// Gift-givers choose a reveal month unless the owner already sees reservations.
+    /// Gift-givers choose a reveal month unless everyone managing the list sees reservations.
     pub fn asks_reveal(&self) -> bool {
-        !self.list.show_claims_to_owner
+        self.secret_reservations
     }
     /// Who the gifts are for, as gift-givers would say it.
     pub fn recipient_label(&self) -> &str {
@@ -293,7 +297,8 @@ pub struct SharePage {
     /// (family, currently shared)
     pub families: Vec<(FamilySummary, bool)>,
     pub public_url: Option<String>,
-    pub managers: Vec<User>,
+    pub owner: User,
+    pub managers: Vec<crate::db::Manager>,
     /// Family members who could be made co-managers.
     pub candidates: Vec<User>,
 }
@@ -412,7 +417,7 @@ pub struct ReservationView {
     pub claim_id: i64,
     pub quantity: i64,
     pub purchased: bool,
-    /// The list hides reservations from its owner, so the reveal month matters.
+    /// The list hides reservations from its owner or a co-manager, so the reveal month matters.
     pub surprise: bool,
     pub reveal_on: Option<String>,
     pub reveal_options: Vec<MonthOption>,

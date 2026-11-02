@@ -852,3 +852,203 @@ async fn amazon_list_import_only_fetches_amazon() {
     let r = other.post(&import, &[("url", "https://a.co/d/x")]).await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
 }
+
+/// The id in the `<option value="…">` for this person on a page's people picker.
+fn option_value(body: &str, name: &str) -> String {
+    let at = body
+        .find(&format!(">{name}</option>"))
+        .expect("person in picker");
+    let open = body[..at].rfind("value=\"").unwrap() + 7;
+    body[open..].split('"').next().unwrap().to_string()
+}
+
+fn item_ids(page: &str) -> Vec<i64> {
+    page.match_indices("id=\"item-")
+        .map(|(i, _)| {
+            page[i + 9..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+                .parse()
+                .unwrap()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn each_manager_chooses_whether_they_see_reservations() {
+    let app = test_app().await;
+
+    // Mom makes Maya's list before Maya has an account, and sees reservations so she can buy.
+    let mut mom = Client::new(&app);
+    mom.signup("Mom", "mom@example.com").await;
+    let r = mom.post("/families", &[("name", "The Lees")]).await;
+    let family_id = id_from_location(r.location.as_deref().unwrap(), "/families/");
+    mom.post(
+        &format!("/families/{family_id}/invites"),
+        &[("expires", "")],
+    )
+    .await;
+    let token = invite_token(&mom.get(&format!("/families/{family_id}")).await.body);
+    let r = mom
+        .post(
+            "/lists",
+            &[
+                ("title", "Maya's Christmas"),
+                ("recipient_name", "Maya"),
+                ("show_claims_to_owner", "1"),
+                ("families", &family_id.to_string()),
+            ],
+        )
+        .await;
+    let list_id = id_from_location(r.location.as_deref().unwrap(), "/lists/");
+    for title in ["Robot kit", "Puzzle", "Scooter"] {
+        mom.post(&format!("/lists/{list_id}/items"), &[("title", title)])
+            .await;
+    }
+    let ids = item_ids(&mom.get(&format!("/lists/{list_id}")).await.body);
+    let (robot, puzzle, scooter) = (ids[0], ids[1], ids[2]);
+    // Nobody is kept in the dark yet, so no reveal month is needed.
+    let r = mom.post(&format!("/items/{robot}/claim"), &[]).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    assert!(mom
+        .get(r.location.as_deref().unwrap())
+        .await
+        .body
+        .contains("You&#x27;re getting"));
+
+    // Later Maya gets an account; Mom adds her as a co-manager without reservations, and adds
+    // Dad with them.
+    let mut maya = Client::new(&app);
+    maya.signup("Maya Lee", "maya@example.com").await;
+    maya.post(&format!("/join/{token}"), &[]).await;
+    let mut dad = Client::new(&app);
+    dad.signup("Dad", "dad@example.com").await;
+    dad.post(&format!("/join/{token}"), &[]).await;
+    let mut grandma = Client::new(&app);
+    grandma.signup("Grandma", "grandma@example.com").await;
+    grandma.post(&format!("/join/{token}"), &[]).await;
+    let share = mom.get(&format!("/lists/{list_id}/share")).await.body;
+    let maya_id = option_value(&share, "Maya Lee");
+    let dad_id = option_value(&share, "Dad");
+    let r = mom
+        .post(
+            &format!("/lists/{list_id}/managers"),
+            &[("user_id", &maya_id)],
+        )
+        .await;
+    assert!(mom
+        .get(r.location.as_deref().unwrap())
+        .await
+        .body
+        .contains("won&#x27;t see what&#x27;s been reserved"));
+    mom.post(
+        &format!("/lists/{list_id}/managers"),
+        &[("user_id", &dad_id), ("sees_claims", "1")],
+    )
+    .await;
+
+    // Now that Maya mustn't see, Grandma has to pick when she may find out.
+    let r = grandma.post(&format!("/items/{puzzle}/claim"), &[]).await;
+    assert!(grandma
+        .get(r.location.as_deref().unwrap())
+        .await
+        .body
+        .contains("pick the month"));
+    let this_month = {
+        let today = time::OffsetDateTime::now_utc().date();
+        format!("{:04}-{:02}", today.year(), u8::from(today.month()))
+    };
+    let january = format!("{}-01", year_from_now(1));
+    grandma
+        .post(
+            &format!("/items/{puzzle}/claim"),
+            &[("reveal_month", &this_month)],
+        )
+        .await;
+    dad.post(
+        &format!("/items/{scooter}/claim"),
+        &[("reveal_month", &january)],
+    )
+    .await;
+
+    // Mom and Dad see everything that's taken.
+    let page = mom.get(&format!("/lists/{list_id}")).await.body;
+    assert!(page.contains("Reserved by Grandma") && page.contains("Reserved by Dad"));
+    let page = dad.get(&format!("/lists/{list_id}")).await.body;
+    assert!(page.contains("Reserved by Mom") && page.contains("Reserved by Grandma"));
+
+    // Maya can add wishes, but sees no reservations except a gift whose reveal month has come.
+    let r = maya
+        .post(
+            &format!("/lists/{list_id}/items"),
+            &[("title", "Paint set")],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    let page = maya.get(&format!("/lists/{list_id}")).await.body;
+    assert!(page.contains("Paint set") && page.contains("Robot kit"));
+    assert!(!page.contains("Reserved"));
+    assert!(!page.contains("I&#x27;ll get this"));
+    assert!(page.contains("Reservations are hidden from you"));
+    assert_eq!(page.matches("🎁 From").count(), 1);
+    assert!(page.contains("🎁 From Grandma"));
+    assert_eq!(
+        maya.post(
+            &format!("/items/{robot}/claim"),
+            &[("reveal_month", &january)]
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+
+    // Maya can't switch reservations on for herself, or change Mom's setting.
+    for uid in [maya_id.as_str(), &dad_id] {
+        assert_eq!(
+            maya.post(
+                &format!("/lists/{list_id}/managers/{uid}/claims"),
+                &[("sees_claims", "1")]
+            )
+            .await
+            .status,
+            StatusCode::FORBIDDEN
+        );
+    }
+    maya.post(
+        &format!("/lists/{list_id}/edit"),
+        &[("title", "Maya's Christmas!!"), ("recipient_name", "Maya")],
+    )
+    .await;
+    assert!(mom
+        .get(&format!("/lists/{list_id}"))
+        .await
+        .body
+        .contains("Reserved by Grandma"));
+    assert!(!maya
+        .get(&format!("/lists/{list_id}/edit"))
+        .await
+        .body
+        .contains("show_claims_to_owner"));
+
+    // Mom can change anyone's setting from the share page.
+    let share = mom.get(&format!("/lists/{list_id}/share")).await.body;
+    assert_eq!(share.matches("Reservations hidden").count(), 1);
+    mom.post(
+        &format!("/lists/{list_id}/managers/{dad_id}/claims"),
+        &[("sees_claims", "0")],
+    )
+    .await;
+    assert!(!dad
+        .get(&format!("/lists/{list_id}"))
+        .await
+        .body
+        .contains("Reserved"));
+
+    // On Mom's shopping list, her robot reservation stays secret from Maya until she picks a month.
+    assert!(mom
+        .get("/reservations")
+        .await
+        .body
+        .contains("Secret from Maya for now"));
+}

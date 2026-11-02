@@ -44,6 +44,10 @@ pub fn router(state: AppState) -> Router {
         .route("/lists/{id}/public", post(lists::update_public_link))
         .route("/lists/{id}/managers", post(lists::add_manager))
         .route(
+            "/lists/{id}/managers/{uid}/claims",
+            post(lists::set_sees_claims),
+        )
+        .route(
             "/lists/{id}/managers/{uid}/remove",
             post(lists::remove_manager),
         )

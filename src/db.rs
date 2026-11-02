@@ -418,3 +418,49 @@ pub async fn list_access(db: &Db, list: &Wishlist, user_id: Option<i64>) -> sqlx
         Access::None
     })
 }
+
+/// Whether this viewer sees reservations. Gift-givers always do; the owner and each co-manager
+/// only if they chose to, so the person a list is for can manage it without spoiling surprises.
+pub async fn sees_claims(
+    db: &Db,
+    list: &Wishlist,
+    access: Access,
+    user_id: Option<i64>,
+) -> sqlx::Result<bool> {
+    Ok(match access {
+        Access::Owner => list.show_claims_to_owner,
+        Access::Manager => sqlx::query_scalar(
+            "SELECT sees_claims FROM wishlist_managers WHERE wishlist_id = ? AND user_id = ?",
+        )
+        .bind(list.id)
+        .bind(user_id)
+        .fetch_optional(db)
+        .await?
+        .unwrap_or(false),
+        Access::Family | Access::None => true,
+    })
+}
+
+/// Whether reservations are hidden from anyone who manages the list, so gift-givers pick the
+/// month that person may find out.
+pub async fn has_secret_reservations(db: &Db, list: &Wishlist) -> sqlx::Result<bool> {
+    if !list.show_claims_to_owner {
+        return Ok(true);
+    }
+    let hidden: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM wishlist_managers WHERE wishlist_id = ? AND sees_claims = 0 LIMIT 1",
+    )
+    .bind(list.id)
+    .fetch_optional(db)
+    .await?;
+    Ok(hidden.is_some())
+}
+
+/// A co-manager of a list and whether they see reservations.
+#[derive(Clone, Debug, FromRow)]
+pub struct Manager {
+    pub id: i64,
+    pub email: String,
+    pub display_name: String,
+    pub sees_claims: bool,
+}

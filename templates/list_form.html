@@ -18,10 +18,12 @@
       <label><span>Event date <span class="muted small">(optional)</span></span><input type="date" name="event_date" value="{{ event_date }}"></label>
     </div>
     <label><span>Notes for gift-givers <span class="muted small">(optional)</span></span><textarea name="description" rows="3" maxlength="2000" placeholder="Sizes, favourite colours, things to avoid…">{{ description }}</textarea></label>
+    {% if can_set_claims %}
     <label class="check">
       <input type="checkbox" name="show_claims_to_owner" value="1" {% if show_claims_to_owner %}checked{% endif %}>
-      <span><b>Show me what's been reserved</b><br><span class="muted small">Turn this on when you manage a list for someone else (like your child), so you can see who's buying what. Leave it off for your own list to keep gifts a surprise.</span></span>
+      <span><b>Show me what's been reserved</b><br><span class="muted small">Turn this on when you make a list for someone else (like your child), so you can see who's buying what and reserve gifts yourself. Leave it off for your own list to keep gifts a surprise. This is just for you: if your child gets an account later, add them as a co-manager under <b>Share</b> and they still won't see what's reserved.</span></span>
     </label>
+    {% endif %}
     {% if !families.is_empty() %}
     <fieldset>
       <legend>Share with families</legend>

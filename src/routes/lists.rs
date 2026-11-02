@@ -88,6 +88,7 @@ pub async fn new_list_page(State(state): State<AppState>, ctx: Ctx) -> AppResult
         description: String::new(),
         event_date: String::new(),
         show_claims_to_owner: false,
+        can_set_claims: true,
         families,
         error: None,
     })
@@ -118,6 +119,7 @@ pub async fn create_list(
                 description: f.description.clone().unwrap_or_default(),
                 event_date: f.event_date.clone().unwrap_or_default(),
                 show_claims_to_owner: f.show_claims_to_owner.is_some(),
+                can_set_claims: true,
                 families,
                 error: Some(msg),
             });
@@ -161,7 +163,7 @@ pub async fn edit_list_page(
     ctx: Ctx,
     Path(id): Path<i64>,
 ) -> AppResult<Response> {
-    let (list, _, _) = editable_list(&state, &ctx, id).await?;
+    let (list, access, _) = editable_list(&state, &ctx, id).await?;
     render(ListFormPage {
         ctx,
         title: list.title.clone(),
@@ -169,6 +171,7 @@ pub async fn edit_list_page(
         description: list.description.clone().unwrap_or_default(),
         event_date: list.event_date.clone().unwrap_or_default(),
         show_claims_to_owner: list.show_claims_to_owner,
+        can_set_claims: access == Access::Owner,
         list: Some(list),
         families: vec![],
         error: None,
@@ -181,7 +184,8 @@ pub async fn update_list(
     Path(id): Path<i64>,
     axum_extra::extract::Form(f): axum_extra::extract::Form<ListForm>,
 ) -> AppResult<Response> {
-    let (list, _, _) = editable_list(&state, &ctx, id).await?;
+    let (list, access, _) = editable_list(&state, &ctx, id).await?;
+    let is_owner = access == Access::Owner;
     let clean = match validate_list(&f) {
         Ok(c) => c,
         Err(msg) => {
@@ -192,6 +196,7 @@ pub async fn update_list(
                 description: f.description.clone().unwrap_or_default(),
                 event_date: f.event_date.clone().unwrap_or_default(),
                 show_claims_to_owner: f.show_claims_to_owner.is_some(),
+                can_set_claims: is_owner,
                 list: Some(list),
                 families: vec![],
                 error: Some(msg),
@@ -206,7 +211,12 @@ pub async fn update_list(
     .bind(&clean.recipient_name)
     .bind(&clean.description)
     .bind(&clean.event_date)
-    .bind(clean.show_claims_to_owner)
+    // "Show me what's been reserved" is the owner's own choice; co-managers have their own.
+    .bind(if is_owner {
+        clean.show_claims_to_owner
+    } else {
+        list.show_claims_to_owner
+    })
     .bind(id)
     .execute(&state.db)
     .await?;
@@ -319,8 +329,10 @@ pub async fn build_list_page(
 ) -> AppResult<ListPage> {
     let me = ctx.user.as_ref().map(|u| u.id);
     let is_editor = access.can_edit();
-    // Editors don't see reservations unless the list opts in (e.g. a parent running a child's list).
-    let claims_visible = !is_editor || list.show_claims_to_owner;
+    // The owner and co-managers each choose whether they see reservations (a parent running a
+    // child's list does; the child, as a co-manager, doesn't).
+    let claims_visible = db::sees_claims(&state.db, &list, access, me).await?;
+    let secret_reservations = db::has_secret_reservations(&state.db, &list).await?;
     let claim_names_visible = claims_visible && (access != Access::None);
     let can_claim = claims_visible && (me.is_some() || public_view);
 
@@ -413,6 +425,7 @@ pub async fn build_list_page(
         .map(util::next_month);
     Ok(ListPage {
         reveal_options: month_options(default_reveal),
+        secret_reservations,
         owner_name,
         is_editor,
         is_owner: access == Access::Owner,
@@ -452,8 +465,12 @@ pub async fn share_page(
             (f, on)
         })
         .collect();
-    let managers: Vec<User> = sqlx::query_as(
-        "SELECT u.id, u.email, u.display_name FROM wishlist_managers m JOIN users u ON u.id = m.user_id
+    let owner: User = sqlx::query_as("SELECT id, email, display_name FROM users WHERE id = ?")
+        .bind(list.owner_id)
+        .fetch_one(&state.db)
+        .await?;
+    let managers: Vec<db::Manager> = sqlx::query_as(
+        "SELECT u.id, u.email, u.display_name, m.sees_claims FROM wishlist_managers m JOIN users u ON u.id = m.user_id
           WHERE m.wishlist_id = ? ORDER BY u.display_name",
     )
     .bind(id)
@@ -482,6 +499,7 @@ pub async fn share_page(
         is_owner: access == Access::Owner,
         families,
         public_url,
+        owner,
         managers,
         candidates,
     })
@@ -564,6 +582,8 @@ pub async fn update_public_link(
 #[derive(Deserialize)]
 pub struct ManagerForm {
     user_id: i64,
+    /// Checked when the new co-manager should see reservations (e.g. the other parent).
+    sees_claims: Option<String>,
 }
 
 pub async fn add_manager(
@@ -578,13 +598,14 @@ pub async fn add_manager(
     }
     // Must share a family with the owner.
     let res = sqlx::query(
-        "INSERT OR IGNORE INTO wishlist_managers (wishlist_id, user_id)
-         SELECT ?1, b.user_id FROM family_members a JOIN family_members b ON b.family_id = a.family_id
+        "INSERT OR IGNORE INTO wishlist_managers (wishlist_id, user_id, sees_claims)
+         SELECT ?1, b.user_id, ?4 FROM family_members a JOIN family_members b ON b.family_id = a.family_id
           WHERE a.user_id = ?2 AND b.user_id = ?3 AND b.user_id != ?2 LIMIT 1",
     )
     .bind(id)
     .bind(list.owner_id)
     .bind(f.user_id)
+    .bind(f.sees_claims.is_some())
     .execute(&state.db)
     .await?;
     if res.rows_affected() == 0 {
@@ -597,8 +618,60 @@ pub async fn add_manager(
     Ok(redirect_flash(
         &format!("/lists/{id}/share"),
         "ok",
-        "Co-manager added. They can now add and edit items.",
+        if f.sees_claims.is_some() {
+            "Co-manager added. They can add and edit items, and see what's been reserved."
+        } else {
+            "Co-manager added. They can add and edit items, but won't see what's been reserved."
+        },
     ))
+}
+
+#[derive(Deserialize)]
+pub struct SeesClaimsForm {
+    sees_claims: String,
+}
+
+/// Change whether one manager of a list (the owner or a co-manager) sees reservations.
+/// The owner decides for everyone; a co-manager may only hide them from themselves, so a child
+/// who co-manages their own list can't peek.
+pub async fn set_sees_claims(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path((id, uid)): Path<(i64, i64)>,
+    Form(f): Form<SeesClaimsForm>,
+) -> AppResult<Response> {
+    let (list, access, user) = editable_list(&state, &ctx, id).await?;
+    let sees = f.sees_claims == "1";
+    let is_owner = access == Access::Owner;
+    if !(is_owner || (user.id == uid && !sees)) {
+        return Err(AppError::Forbidden);
+    }
+    let changed = if uid == list.owner_id {
+        sqlx::query("UPDATE wishlists SET show_claims_to_owner = ? WHERE id = ?")
+            .bind(sees)
+            .bind(id)
+            .execute(&state.db)
+            .await?
+    } else {
+        sqlx::query(
+            "UPDATE wishlist_managers SET sees_claims = ? WHERE wishlist_id = ? AND user_id = ?",
+        )
+        .bind(sees)
+        .bind(id)
+        .bind(uid)
+        .execute(&state.db)
+        .await?
+    };
+    if changed.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    let msg = match (user.id == uid, sees) {
+        (true, true) => "You'll now see what's been reserved.",
+        (true, false) => "Reservations are now hidden from you.",
+        (false, true) => "They'll now see what's been reserved.",
+        (false, false) => "Reservations are now hidden from them.",
+    };
+    Ok(redirect_flash(&format!("/lists/{id}/share"), "ok", msg))
 }
 
 pub async fn remove_manager(
