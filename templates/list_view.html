@@ -45,7 +45,7 @@
 <p class="hint">📅 When you reserve a gift, pick the month {{ self.recipient_label() }} can find out it's been bought — usually the month after the occasion (for Christmas, choose January). It doesn't have to be exact. Until then, it stays a secret.</p>
 {% endif %}
 
-{% if items.is_empty() %}
+{% if items.is_empty() && taken.is_empty() %}
 <div class="empty-card">
   {% if is_editor %}
   <p><b>This list is empty.</b> Paste a link from any store and we'll fill in the details.</p>
@@ -57,7 +57,7 @@
 </div>
 {% else %}
 <div class="toolbar">
-  <span class="muted small">{{ items.len() }} wish{% if items.len() != 1 %}es{% endif %}</span>
+  <span class="muted small">{{ items.len() + taken.len() }} wish{% if items.len() + taken.len() != 1 %}es{% endif %}{% if !taken.is_empty() %} · {{ items.len() }} still available{% endif %}</span>
   <form method="get" class="sort-form">
     <label class="small muted">Sort
       <select name="sort" data-autosubmit>
@@ -70,9 +70,19 @@
     <noscript><button class="btn btn-small btn-ghost">Go</button></noscript>
   </form>
 </div>
+{% if !items.is_empty() %}
 <div class="items">
   {% for iv in items %}{% include "_item_card.html" %}{% endfor %}
 </div>
+{% else %}
+<p class="muted">Everything on this list has been reserved. 🎉</p>
+{% endif %}
+{% if !taken.is_empty() %}
+<h2 class="section-title taken-title">Already reserved ({{ taken.len() }}) <span class="muted small">— someone's getting these, please don't buy them</span></h2>
+<div class="items">
+  {% for iv in taken %}{% include "_item_card.html" %}{% endfor %}
+</div>
+{% endif %}
 {% endif %}
 
 {% if !received.is_empty() %}

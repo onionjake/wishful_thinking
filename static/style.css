@@ -207,6 +207,14 @@ legend { font-weight: 700; padding: 0 6px; }
 .item { display: flex; gap: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow); scroll-margin-top: 80px; }
 .item:target { outline: 3px solid var(--gold); }
 .item.taken .item-img img, .item.received .item-img img { filter: grayscale(.6); opacity: .7; }
+/* Fully reserved: flatten the card so it reads as "not available" next to open wishes. */
+.item.taken:not(.received) { background: var(--surface-2); border-style: dashed; box-shadow: none; }
+.item.taken:not(.received) .item-img { opacity: .5; }
+.item.taken:not(.received) .item-img img { filter: grayscale(1); opacity: 1; }
+.item.taken:not(.received) .prio, .item.taken:not(.received) .item-meta, .item.taken:not(.received) .item-notes { opacity: .55; }
+.item.taken:not(.received) h3, .item.taken:not(.received) h3 a { color: var(--muted); font-weight: 600; }
+.taken-title { margin-top: 32px; }
+.taken-title .small { font-weight: 400; }
 .item-img { width: 132px; height: 132px; flex: none; border-radius: 12px; background: #fff; border: 1px solid var(--line); display: grid; place-items: center; overflow: hidden; font-size: 2.4rem; }
 .item-img img { width: 100%; height: 100%; object-fit: contain; }
 .item-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
