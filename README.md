@@ -24,7 +24,8 @@ Wish lists for the whole family, written in Rust with SQLite.
   including its comment, priority and quantity. Importing again only adds what's new.
 - Also included: priorities (*Most wanted / Would love / Nice to have*), quantities ("wants 2"), list
   co-managers (e.g. both parents, or the child themselves), *Got it ✓* for received gifts, copying or moving items between lists,
-  sorting, archiving, a browser bookmarklet, dark mode, and a mobile layout.
+  sorting, archiving, a browser bookmarklet, dark mode, and a mobile layout. It can be installed as an app
+  (*Add to Home Screen* on phones, *Install* in desktop Chrome/Edge); it still needs a connection to work.
 
 ## Running
 
@@ -128,6 +129,6 @@ src/
   importer/           fetch (SSRF-safe), extract (structured data), price, llm, amazon_list, orchestration
   templates.rs        Askama template contexts
 templates/            HTML templates
-static/               CSS, a little progressive-enhancement JS, favicon
+static/               CSS, a little progressive-enhancement JS, favicon, app icons, web app manifest, service worker
 migrations/           SQL schema
 ```

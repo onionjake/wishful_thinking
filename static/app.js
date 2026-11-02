@@ -2,6 +2,11 @@
 (function () {
   "use strict";
 
+  // Register the (no-op) service worker so the site can be installed as an app.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js").catch(function () {});
+  }
+
   // Confirmation prompts on destructive forms.
   document.querySelectorAll("form[data-confirm]").forEach(function (form) {
     form.addEventListener("submit", function (e) {

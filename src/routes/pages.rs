@@ -59,3 +59,51 @@ pub async fn favicon() -> impl IntoResponse {
         include_str!("../../static/favicon.svg"),
     )
 }
+
+pub async fn manifest() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "application/manifest+json"),
+            (header::CACHE_CONTROL, CACHE),
+        ],
+        include_str!("../../static/manifest.webmanifest"),
+    )
+}
+
+/// Served from the site root so its scope covers the whole app. `no-cache` lets
+/// browsers pick up changes to it promptly.
+pub async fn service_worker() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        include_str!("../../static/sw.js"),
+    )
+}
+
+fn png(bytes: &'static [u8]) -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, CACHE),
+        ],
+        bytes,
+    )
+}
+
+pub async fn apple_touch_icon() -> impl IntoResponse {
+    png(include_bytes!("../../static/apple-touch-icon.png"))
+}
+
+pub async fn icon_192() -> impl IntoResponse {
+    png(include_bytes!("../../static/icon-192.png"))
+}
+
+pub async fn icon_512() -> impl IntoResponse {
+    png(include_bytes!("../../static/icon-512.png"))
+}
+
+pub async fn icon_maskable_512() -> impl IntoResponse {
+    png(include_bytes!("../../static/icon-maskable-512.png"))
+}
