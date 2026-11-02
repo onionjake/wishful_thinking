@@ -40,48 +40,42 @@
   </section>
 
   <section class="card">
-    <h2>🙈 Who is this list for?</h2>
-    <p class="muted small">If the person this list is for has their own account (like your child), pick them here. They'll never see who's getting what — not even if they co-manage the list or see it through a family — until each gift-giver's reveal month. You can still reserve gifts yourself.</p>
-    {% if is_owner %}
-      {% if recipient_options.is_empty() %}
-      <p class="muted small">Nobody to pick yet — invite them to one of your families first.</p>
-      {% else %}
-      <form method="post" action="/lists/{{ list.id }}/recipient" class="inline-form">
-        <select name="user_id" aria-label="Who the list is for">
-          <option value="">Nobody with an account</option>
-          {% for p in recipient_options %}<option value="{{ p.id }}"{% if self.is_recipient(p.id) %} selected{% endif %}>{{ p.display_name }}</option>{% endfor %}
-        </select>
-        <button class="btn btn-small" type="submit">Save</button>
-      </form>
-      {% endif %}
-    {% else %}
-      <p class="small">{% if let Some(p) = self.recipient() %}This list is for <b>{{ p.display_name }}</b>.{% else %}Not set.{% endif %} Only the list's owner can change this.</p>
-    {% endif %}
-  </section>
-
-  <section class="card">
-    <h2>🤝 Co-managers</h2>
-    <p class="muted small">Co-managers can add, edit and remove items — useful when both parents look after a child's list. Pick from people in your families.</p>
-    {% if !managers.is_empty() %}
+    <h2>🤝 Who manages this list</h2>
+    <p class="muted small">Managers can add, edit and remove items — useful when both parents look after a child's list. Each one decides separately whether they see what's been reserved. Make the list now, and once your child has an account, add them here with reservations hidden: they can add wishes without spoiling any surprises.</p>
     <ul class="people">
+      <li><span class="avatar avatar-small">{{ owner.display_name.chars().next().unwrap_or('?') }}</span> {{ owner.display_name }} <span class="muted small">owner</span>
+        {% if list.show_claims_to_owner %}<span class="chip chip-small">👀 Sees reservations</span>{% else %}<span class="chip chip-small chip-muted">🤫 Reservations hidden</span>{% endif %}
+        {% if is_owner %}
+        <form method="post" action="/lists/{{ list.id }}/managers/{{ owner.id }}/claims"><input type="hidden" name="sees_claims" value="{% if list.show_claims_to_owner %}0{% else %}1{% endif %}"><button class="btn btn-small btn-ghost" type="submit">{% if list.show_claims_to_owner %}Hide from me{% else %}Show me{% endif %}</button></form>
+        {% endif %}
+      </li>
       {% for m in managers %}
       <li><span class="avatar avatar-small">{{ m.display_name.chars().next().unwrap_or('?') }}</span> {{ m.display_name }} <span class="muted small">{{ m.email }}</span>
+        {% if m.sees_claims %}<span class="chip chip-small">👀 Sees reservations</span>{% else %}<span class="chip chip-small chip-muted">🤫 Reservations hidden</span>{% endif %}
+        {% if is_owner %}
+        <form method="post" action="/lists/{{ list.id }}/managers/{{ m.id }}/claims"><input type="hidden" name="sees_claims" value="{% if m.sees_claims %}0{% else %}1{% endif %}"><button class="btn btn-small btn-ghost" type="submit">{% if m.sees_claims %}Hide from them{% else %}Let them see{% endif %}</button></form>
+        {% else if ctx.is_user(m.id) && m.sees_claims %}
+        <form method="post" action="/lists/{{ list.id }}/managers/{{ m.id }}/claims"><input type="hidden" name="sees_claims" value="0"><button class="btn btn-small btn-ghost" type="submit">Hide from me</button></form>
+        {% endif %}
         {% if is_owner || ctx.is_user(m.id) %}
         <form method="post" action="/lists/{{ list.id }}/managers/{{ m.id }}/remove"><button class="btn btn-small btn-ghost" type="submit">Remove</button></form>
         {% endif %}
       </li>
       {% endfor %}
     </ul>
-    {% endif %}
     {% if is_owner %}
       {% if candidates.is_empty() %}
       <p class="muted small">Nobody else to add yet — invite people to one of your families first.</p>
       {% else %}
       <form method="post" action="/lists/{{ list.id }}/managers" class="inline-form">
         <select name="user_id" aria-label="Person">{% for c in candidates %}<option value="{{ c.id }}">{{ c.display_name }}</option>{% endfor %}</select>
+        <label class="check small"><input type="checkbox" name="sees_claims" value="1"> <span>Can see what's reserved</span></label>
         <button class="btn btn-small" type="submit">Add co-manager</button>
       </form>
+      <p class="muted small">Leave <i>Can see what's reserved</i> off for the person the list is for. Turn it on for another parent.</p>
       {% endif %}
+    {% else %}
+      <p class="muted small">Only the owner can add co-managers or let someone see reservations.</p>
     {% endif %}
   </section>
 </div>

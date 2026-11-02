@@ -153,6 +153,8 @@ pub struct ListFormPage {
     pub description: String,
     pub event_date: String,
     pub show_claims_to_owner: bool,
+    /// Only the owner chooses "Show me what's been reserved"; co-managers have their own setting.
+    pub can_set_claims: bool,
     /// Families to share a new list with (family, pre-checked).
     pub families: Vec<(FamilySummary, bool)>,
     pub error: Option<String>,
@@ -205,8 +207,6 @@ pub struct ListPage {
     pub owner_name: String,
     pub is_editor: bool,
     pub is_owner: bool,
-    /// The viewer is the person the list is for, so reservations are hidden from them.
-    pub is_recipient: bool,
     /// Viewing through the public link rather than as a family member.
     pub public_view: bool,
     /// Whether reservation status is shown at all.
@@ -222,12 +222,14 @@ pub struct ListPage {
     pub sort: String,
     /// Months a gift-giver can pick for when the owner may see the reservation.
     pub reveal_options: Vec<MonthOption>,
+    /// Reservations are hidden from the owner or a co-manager, so givers pick a reveal month.
+    pub secret_reservations: bool,
 }
 
 impl ListPage {
-    /// Gift-givers choose a reveal month unless nobody needs to be kept from seeing reservations.
+    /// Gift-givers choose a reveal month unless everyone managing the list sees reservations.
     pub fn asks_reveal(&self) -> bool {
-        self.list.has_secret_reservations()
+        self.secret_reservations
     }
     /// Who the gifts are for, as gift-givers would say it.
     pub fn recipient_label(&self) -> &str {
@@ -238,7 +240,7 @@ impl ListPage {
                 .unwrap_or(&self.owner_name)
         })
     }
-    /// Wishes whose giver's reveal month has passed, shown to someone reservations are hidden from.
+    /// Wishes whose giver's reveal month has passed, shown to an editor of a surprise list.
     pub fn revealed_count(&self) -> usize {
         if self.claims_visible {
             return 0;
@@ -295,23 +297,10 @@ pub struct SharePage {
     /// (family, currently shared)
     pub families: Vec<(FamilySummary, bool)>,
     pub public_url: Option<String>,
-    pub managers: Vec<User>,
+    pub owner: User,
+    pub managers: Vec<crate::db::Manager>,
     /// Family members who could be made co-managers.
     pub candidates: Vec<User>,
-    /// People in the owner's families (and co-managers) the list could be for.
-    pub recipient_options: Vec<User>,
-}
-
-impl SharePage {
-    /// The account this list is for, if any.
-    pub fn recipient(&self) -> Option<&User> {
-        self.recipient_options
-            .iter()
-            .find(|u| Some(u.id) == self.list.recipient_user_id)
-    }
-    pub fn is_recipient(&self, user_id: &i64) -> bool {
-        self.list.recipient_user_id == Some(*user_id)
-    }
 }
 
 #[derive(Template)]
@@ -428,7 +417,7 @@ pub struct ReservationView {
     pub claim_id: i64,
     pub quantity: i64,
     pub purchased: bool,
-    /// The list hides reservations from its owner or recipient, so the reveal month matters.
+    /// The list hides reservations from its owner or a co-manager, so the reveal month matters.
     pub surprise: bool,
     pub reveal_on: Option<String>,
     pub reveal_options: Vec<MonthOption>,
