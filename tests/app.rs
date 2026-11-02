@@ -1052,3 +1052,41 @@ async fn each_manager_chooses_whether_they_see_reservations() {
         .body
         .contains("Secret from Maya for now"));
 }
+
+#[tokio::test]
+async fn installable_as_a_web_app() {
+    let app = test_app().await;
+    let mut c = Client::new(&app);
+    let home = c.get("/").await;
+    assert!(home.body.contains(r#"<link rel="manifest" href="/manifest.webmanifest">"#));
+    assert!(home.body.contains(r#"href="/apple-touch-icon.png""#));
+
+    let r = c.get("/manifest.webmanifest").await;
+    assert_eq!(r.status, StatusCode::OK);
+    let manifest: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+    assert_eq!(manifest["display"], "standalone");
+    assert_eq!(manifest["start_url"], "/");
+    let icons = manifest["icons"].as_array().unwrap();
+    assert!(icons.iter().any(|i| i["sizes"] == "192x192"));
+    assert!(icons.iter().any(|i| i["sizes"] == "512x512"));
+
+    // Every icon the manifest names is actually served, as a PNG or SVG.
+    for icon in icons {
+        let src = icon["src"].as_str().unwrap();
+        let resp = app
+            .clone()
+            .oneshot(Request::get(src).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{src}");
+        assert_eq!(
+            resp.headers()[header::CONTENT_TYPE],
+            icon["type"].as_str().unwrap(),
+            "{src}"
+        );
+    }
+
+    let sw = c.get("/sw.js").await;
+    assert_eq!(sw.status, StatusCode::OK);
+    assert!(sw.body.contains("addEventListener"));
+}
