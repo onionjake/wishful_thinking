@@ -35,9 +35,9 @@
     });
   });
 
-  // Close the account menu when tapping/clicking outside it or pressing Escape.
-  // pointerdown (not click) so taps on non-interactive areas register on iOS.
-  var usermenus = document.querySelectorAll("details.usermenu");
+  // Close the account menu and the ⋯ menus on wishes when tapping/clicking outside them or
+  // pressing Escape. pointerdown (not click) so taps on non-interactive areas register on iOS.
+  var usermenus = document.querySelectorAll("details.usermenu, details.item-menu");
   if (usermenus.length) {
     document.addEventListener("pointerdown", function (e) {
       usermenus.forEach(function (menu) {

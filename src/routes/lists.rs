@@ -415,6 +415,11 @@ pub async fn build_list_page(
         .public_token
         .as_ref()
         .map(|t| state.absolute(&ctx.base_url, &format!("/p/{t}")));
+    // Signed-in visitors can save wishes they like to one of their own lists.
+    let my_lists = match me {
+        Some(uid) if !is_editor => crate::routes::items::other_lists(state, uid, list.id).await?,
+        _ => vec![],
+    };
     let guest_name = String::new();
     // Suggest the month after the occasion, e.g. January for Christmas.
     let default_reveal = list
@@ -438,6 +443,7 @@ pub async fn build_list_page(
         family_names,
         public_url,
         guest_name,
+        my_lists,
         sort,
         list,
         ctx,
