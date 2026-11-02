@@ -30,6 +30,25 @@
     });
   });
 
+  // Close the account menu when tapping/clicking outside it or pressing Escape.
+  // pointerdown (not click) so taps on non-interactive areas register on iOS.
+  var usermenus = document.querySelectorAll("details.usermenu");
+  if (usermenus.length) {
+    document.addEventListener("pointerdown", function (e) {
+      usermenus.forEach(function (menu) {
+        if (menu.open && !menu.contains(e.target)) menu.open = false;
+      });
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key !== "Escape") return;
+      usermenus.forEach(function (menu) {
+        if (!menu.open) return;
+        menu.open = false;
+        menu.querySelector("summary").focus();
+      });
+    });
+  }
+
   // Auto-submit sort dropdowns.
   document.querySelectorAll("select[data-autosubmit]").forEach(function (sel) {
     sel.addEventListener("change", function () { sel.form.submit(); });
