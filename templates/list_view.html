@@ -13,7 +13,6 @@
     </p>
     <div class="chips">
       {% if let Some(cd) = self.countdown() %}<span class="chip {% if list.event_is_past() %}chip-muted{% else %}chip-date{% endif %}">📅 {{ cd }}</span>{% endif %}
-      {% if let Some(t) = self.total_display() %}<span class="chip">💰 {{ t }} total</span>{% endif %}
       {% if is_editor %}
         {% for f in family_names %}<span class="chip">👨‍👩‍👧 {{ f }}</span>{% endfor %}
         {% if list.public_token.is_some() %}<span class="chip">🔗 Public link on</span>{% endif %}
