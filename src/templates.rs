@@ -214,7 +214,10 @@ pub struct ListPage {
     /// Whether claimer names are shown (family members) or just "Reserved" (public).
     pub claim_names_visible: bool,
     pub can_claim: bool,
+    /// Wishes still open to reserve (or, when reservations are hidden, every unreceived wish).
     pub items: Vec<ItemView>,
+    /// Wishes already fully reserved by gift-givers; only filled when reservations are shown.
+    pub taken: Vec<ItemView>,
     pub received: Vec<ItemView>,
     pub family_names: Vec<String>,
     pub public_url: Option<String>,

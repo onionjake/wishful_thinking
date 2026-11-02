@@ -1285,3 +1285,39 @@ async fn signed_in_viewers_can_save_wishes_to_their_own_lists() {
         1
     );
 }
+
+#[tokio::test]
+async fn reserved_wishes_sink_below_open_ones() {
+    let app = test_app().await;
+    let (mut owner, mut buyer, list_id, rod_id) = family_with_item(&app).await;
+    owner
+        .post(
+            &format!("/lists/{list_id}/items"),
+            &[("title", "Jigsaw puzzle"), ("price", "15.00")],
+        )
+        .await;
+    let page = buyer.get(&format!("/lists/{list_id}")).await.body;
+    assert!(page.find("Fishing rod").unwrap() < page.find("Jigsaw puzzle").unwrap());
+    assert!(!page.contains("Already reserved"));
+
+    let r = buyer
+        .post(
+            &format!("/items/{rod_id}/claim"),
+            &[("reveal_month", &format!("{}-01", year_from_now(1)))],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+
+    // The reserved rod now comes after the open puzzle, under its own heading.
+    let page = buyer.get(&format!("/lists/{list_id}")).await.body;
+    let heading = page.find("Already reserved (1)").expect("reserved section");
+    assert!(page.find("Jigsaw puzzle").unwrap() < heading);
+    assert!(heading < page.find(&format!("id=\"item-{rod_id}\"")).unwrap());
+    assert!(page.contains("1 still available"));
+
+    // The owner, who can't see reservations, keeps their own order and no hint of a section.
+    let page = owner.get(&format!("/lists/{list_id}")).await.body;
+    assert!(!page.contains("Already reserved"));
+    let rod = page.find(&format!("id=\"item-{rod_id}\"")).unwrap();
+    assert!(page[rod..].contains("Jigsaw puzzle"));
+}

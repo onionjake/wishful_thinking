@@ -370,6 +370,7 @@ pub async fn build_list_page(
     }
 
     let mut active = Vec::new();
+    let mut taken = Vec::new();
     let mut received = Vec::new();
     for item in items {
         let item_claims: Vec<_> = claims
@@ -392,6 +393,9 @@ pub async fn build_list_page(
         };
         if view.item.received {
             received.push(view);
+        } else if claims_visible && view.item.fully_claimed() {
+            // Gift-givers see nothing left to get on these, so they sink below the open wishes.
+            taken.push(view);
         } else {
             active.push(view);
         }
@@ -439,6 +443,7 @@ pub async fn build_list_page(
         claim_names_visible,
         can_claim,
         items: active,
+        taken,
         received,
         family_names,
         public_url,
