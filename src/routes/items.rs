@@ -367,14 +367,39 @@ pub async fn toggle_received(
     ctx: Ctx,
     Path(id): Path<i64>,
 ) -> AppResult<Response> {
-    let (item, list, _) = editable_item(&state, &ctx, id).await?;
+    let (item, list, uid) = editable_item(&state, &ctx, id).await?;
+    let mut tx = state.db.begin().await?;
     sqlx::query("UPDATE items SET received = ? WHERE id = ?")
         .bind(!item.received)
         .bind(id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
+    // A manager who reserved the gift themselves (a parent buying from their child's list) is
+    // done with it once it's received: the item's reservation buttons go away, so mark their
+    // reservation bought here or it never reaches their gift history.
+    let mut bought = false;
+    if !item.received {
+        let mine: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM claims WHERE item_id = ? AND user_id = ? AND purchased = 0",
+        )
+        .bind(id)
+        .bind(uid)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(claim_id) = mine {
+            sqlx::query("UPDATE claims SET purchased = 1 WHERE id = ?")
+                .bind(claim_id)
+                .execute(&mut *tx)
+                .await?;
+            record_gift(&mut tx, claim_id).await?;
+            bought = true;
+        }
+    }
+    tx.commit().await?;
     let msg = if item.received {
         "Moved back to the wish list."
+    } else if bought {
+        "Marked as received 🎉 It's in your gift history."
     } else {
         "Marked as received 🎉"
     };
@@ -772,6 +797,22 @@ pub async fn public_unclaim(
     ))
 }
 
+/// Copy a reservation that's now bought into its buyer's gift history.
+async fn record_gift(conn: &mut sqlx::SqliteConnection, claim_id: i64) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT OR IGNORE INTO gift_history (buyer_id, claim_id, title, url, image_url, price_cents, currency, store, quantity, recipient, occasion, event_date)
+         SELECT c.user_id, c.id, i.title, i.url, i.image_url, i.price_cents, i.currency, i.store, c.quantity,
+                COALESCE(w.recipient_name, u.display_name), w.title, w.event_date
+           FROM claims c JOIN items i ON i.id = c.item_id JOIN wishlists w ON w.id = i.wishlist_id
+           JOIN users u ON u.id = w.owner_id
+          WHERE c.id = ? AND c.user_id IS NOT NULL",
+    )
+    .bind(claim_id)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 pub async fn toggle_purchased(
     State(state): State<AppState>,
     ctx: Ctx,
@@ -795,17 +836,7 @@ pub async fn toggle_purchased(
             .execute(&mut *tx)
             .await?;
     } else {
-        sqlx::query(
-            "INSERT OR IGNORE INTO gift_history (buyer_id, claim_id, title, url, image_url, price_cents, currency, store, quantity, recipient, occasion, event_date)
-             SELECT c.user_id, c.id, i.title, i.url, i.image_url, i.price_cents, i.currency, i.store, c.quantity,
-                    COALESCE(w.recipient_name, u.display_name), w.title, w.event_date
-               FROM claims c JOIN items i ON i.id = c.item_id JOIN wishlists w ON w.id = i.wishlist_id
-               JOIN users u ON u.id = w.owner_id
-              WHERE c.id = ?",
-        )
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+        record_gift(&mut tx, id).await?;
     }
     tx.commit().await?;
     let back = f

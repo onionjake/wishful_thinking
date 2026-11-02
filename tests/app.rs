@@ -1090,3 +1090,74 @@ async fn installable_as_a_web_app() {
     assert_eq!(sw.status, StatusCode::OK);
     assert!(sw.body.contains("addEventListener"));
 }
+
+#[tokio::test]
+async fn receiving_a_gift_you_reserved_on_your_own_list_records_it() {
+    let app = test_app().await;
+    let (mut grandpa, mut mom, grandpas_list, fishing_rod) = family_with_item(&app).await;
+    // Mom runs Maya's list and sees reservations so she can buy from it.
+    let r = mom
+        .post(
+            "/lists",
+            &[
+                ("title", "Maya's Christmas"),
+                ("recipient_name", "Maya"),
+                ("show_claims_to_owner", "1"),
+            ],
+        )
+        .await;
+    let maya_list = id_from_location(r.location.as_deref().unwrap(), "/lists/");
+    for title in ["Robot kit", "Puzzle"] {
+        mom.post(&format!("/lists/{maya_list}/items"), &[("title", title)])
+            .await;
+    }
+    let ids = item_ids(&mom.get(&format!("/lists/{maya_list}")).await.body);
+    let (robot, puzzle) = (ids[0], ids[1]);
+    mom.post(&format!("/items/{robot}/claim"), &[]).await;
+
+    // When it arrives she taps "Got it ✓" rather than "Mark bought"; it still counts as bought.
+    let r = mom.post(&format!("/items/{robot}/received"), &[]).await;
+    assert!(mom
+        .get(r.location.as_deref().unwrap())
+        .await
+        .body
+        .contains("in your gift history"));
+    let history = mom.get("/history").await.body;
+    assert!(history.contains("Robot kit") && history.contains("For Maya"));
+    let shopping = mom.get("/reservations").await.body;
+    assert!(!shopping.contains("To buy") && shopping.contains("Bought ✓"));
+
+    // Moving it back and receiving it again doesn't duplicate or lose it.
+    mom.post(&format!("/items/{robot}/received"), &[]).await;
+    mom.post(&format!("/items/{robot}/received"), &[]).await;
+    assert_eq!(
+        mom.get("/history").await.body.matches("Robot kit").count(),
+        1
+    );
+
+    // Receiving something she didn't reserve adds nothing to her history.
+    mom.post(&format!("/items/{puzzle}/received"), &[]).await;
+    assert!(!mom.get("/history").await.body.contains("Puzzle"));
+
+    // When a list owner receives a gift someone else reserved, that giver's reservation is
+    // left for them to mark bought.
+    let r = mom
+        .post(
+            &format!("/items/{fishing_rod}/claim"),
+            &[("reveal_month", &format!("{}-01", year_from_now(1)))],
+        )
+        .await;
+    mom.get(r.location.as_deref().unwrap()).await; // use up the flash naming the gift
+    let r = grandpa
+        .post(&format!("/items/{fishing_rod}/received"), &[])
+        .await;
+    grandpa.get(r.location.as_deref().unwrap()).await;
+    assert_eq!(
+        r.location.as_deref(),
+        Some(format!("/lists/{grandpas_list}").as_str())
+    );
+    assert!(!mom.get("/history").await.body.contains("Fishing rod"));
+    assert!(!grandpa.get("/history").await.body.contains("Fishing rod"));
+    let shopping = mom.get("/reservations").await.body;
+    assert!(shopping.contains("To buy") && shopping.contains("Fishing rod"));
+}
