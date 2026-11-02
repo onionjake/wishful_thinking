@@ -253,24 +253,6 @@ impl ListPage {
     pub fn pretty_date(&self) -> Option<String> {
         self.list.pretty_event_date()
     }
-    pub fn total_display(&self) -> Option<String> {
-        let mut by_currency: std::collections::BTreeMap<&str, i64> = Default::default();
-        for iv in &self.items {
-            if let Some(c) = iv.item.price_cents {
-                *by_currency.entry(iv.item.currency.as_str()).or_default() += c * iv.item.quantity;
-            }
-        }
-        if by_currency.is_empty() {
-            return None;
-        }
-        Some(
-            by_currency
-                .into_iter()
-                .map(|(cur, cents)| crate::importer::price::format(cents, cur))
-                .collect::<Vec<_>>()
-                .join(" + "),
-        )
-    }
     pub fn claim_action(&self, item_id: &i64) -> String {
         match (&self.public_view, &self.list.public_token) {
             (true, Some(tok)) => format!("/p/{tok}/items/{item_id}/claim"),
