@@ -72,9 +72,9 @@ img { max-width: 100%; }
 .usermenu { position: relative; margin-left: 6px; }
 .usermenu summary { list-style: none; cursor: pointer; }
 .usermenu summary::-webkit-details-marker { display: none; }
-.usermenu .menu { position: absolute; right: 0; top: 46px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); min-width: 220px; padding: 6px; }
-.usermenu .menu a, .usermenu .menu .linklike { display: block; padding: 8px 10px; border-radius: 8px; color: var(--ink); width: 100%; text-align: left; }
-.usermenu .menu a:hover, .usermenu .menu .linklike:hover { background: var(--surface-2); text-decoration: none; }
+.usermenu .menu, .item-menu .menu { position: absolute; right: 0; top: 46px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); min-width: 220px; padding: 6px; }
+.usermenu .menu a, .usermenu .menu .linklike, .item-menu .menu .linklike { display: block; padding: 8px 10px; border-radius: 8px; color: var(--ink); width: 100%; text-align: left; }
+.usermenu .menu a:hover, .usermenu .menu .linklike:hover, .item-menu .menu .linklike:hover { background: var(--surface-2); text-decoration: none; }
 .menu-head { padding: 8px 10px; font-weight: 700; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
 .menu-head small { display: block; font-weight: 400; color: var(--muted); }
 .avatar { display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: var(--brand); color: #fff; font-weight: 800; font-size: .85rem; }
@@ -211,6 +211,13 @@ legend { font-weight: 700; padding: 0 6px; }
 .item-img img { width: 100%; height: 100%; object-fit: contain; }
 .item-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .item-top { display: flex; gap: 6px; align-items: center; }
+.item-menu { position: relative; margin-left: auto; }
+.item-menu summary { list-style: none; cursor: pointer; width: 32px; height: 28px; margin: -4px -4px 0 0; display: grid; place-items: center; border-radius: 8px; color: var(--muted); font-size: 1.25rem; line-height: 1; }
+.item-menu summary::-webkit-details-marker { display: none; }
+.item-menu summary:hover, .item-menu[open] summary { background: var(--surface-2); color: var(--ink); }
+.item-menu .menu { top: 32px; z-index: 20; max-width: min(300px, calc(100vw - 32px)); margin: 0; }
+.item-menu .menu-head { font-size: .85rem; }
+.item-menu .menu .linklike { overflow-wrap: anywhere; }
 .item h3 { margin: 0; font-size: 1rem; overflow-wrap: anywhere; }
 .item h3 a { color: var(--ink); }
 .item-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin: 0; color: var(--muted); font-size: .9rem; }

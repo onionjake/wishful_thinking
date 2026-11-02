@@ -17,7 +17,12 @@ use crate::templates::{
 use crate::util;
 use crate::AppState;
 
-async fn other_lists(state: &AppState, user_id: i64, except: i64) -> AppResult<Vec<(i64, String)>> {
+/// The user's own lists (owned or co-managed, not archived) other than `except`, as (id, title).
+pub async fn other_lists(
+    state: &AppState,
+    user_id: i64,
+    except: i64,
+) -> AppResult<Vec<(i64, String)>> {
     Ok(db::lists_managed_by(&state.db, user_id)
         .await?
         .into_iter()
@@ -450,6 +455,104 @@ pub async fn copy_item(
         "ok",
         &format!("Copied to “{}”.", target.title),
     ))
+}
+
+#[derive(Deserialize)]
+pub struct SaveForm {
+    target_list: i64,
+}
+
+/// Copy a wish from a list the user is browsing onto one of their own lists. Only what describes
+/// the product comes along: the other person's notes, priority and quantity are left behind.
+async fn save_to_own_list(
+    state: &AppState,
+    ctx: &Ctx,
+    item: &Item,
+    target_list: i64,
+    back: &str,
+) -> AppResult<Response> {
+    let (target, _, _) = editable_list(state, ctx, target_list).await?;
+    if target.id == item.wishlist_id {
+        return Ok(redirect_flash(
+            back,
+            "error",
+            "That wish is already on this list.",
+        ));
+    }
+    let key = wish_key(item.url.as_deref(), &item.title);
+    let already = db::items_for_list(&state.db, target.id)
+        .await?
+        .iter()
+        .any(|i| wish_key(i.url.as_deref(), &i.title) == key);
+    if already {
+        return Ok(redirect_flash(
+            back,
+            "ok",
+            &format!("“{}” is already on “{}”.", item.title, target.title),
+        ));
+    }
+    sqlx::query(
+        "INSERT INTO items (wishlist_id, title, url, image_url, price_cents, currency, store, import_source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(target.id)
+    .bind(&item.title)
+    .bind(&item.url)
+    .bind(&item.image_url)
+    .bind(item.price_cents)
+    .bind(&item.currency)
+    .bind(&item.store)
+    .bind(&item.import_source)
+    .execute(&state.db)
+    .await?;
+    sqlx::query("UPDATE wishlists SET updated_at = datetime('now') WHERE id = ?")
+        .bind(target.id)
+        .execute(&state.db)
+        .await?;
+    Ok(redirect_flash(
+        back,
+        "ok",
+        &format!("Added “{}” to “{}”.", item.title, target.title),
+    ))
+}
+
+/// Save a wish from a list shared with the user (through a family) to one of their own lists.
+pub async fn save_item(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path(id): Path<i64>,
+    Form(f): Form<SaveForm>,
+) -> AppResult<Response> {
+    let user = ctx.require_user()?;
+    let item = db::get_item(&state.db, id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let list = db::get_list(&state.db, item.wishlist_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let access = db::list_access(&state.db, &list, Some(user.id)).await?;
+    if !access.can_view() || (list.archived && !access.can_edit()) {
+        return Err(AppError::NotFound);
+    }
+    let back = format!("/lists/{}#item-{id}", list.id);
+    save_to_own_list(&state, &ctx, &item, f.target_list, &back).await
+}
+
+/// Save a wish seen through a list's public link to one of the signed-in user's own lists.
+pub async fn public_save_item(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Path((token, id)): Path<(String, i64)>,
+    Form(f): Form<SaveForm>,
+) -> AppResult<Response> {
+    ctx.require_user()?;
+    let list = public_list_by_token(&state, &token).await?;
+    let item = db::get_item(&state.db, id)
+        .await?
+        .filter(|i| i.wishlist_id == list.id)
+        .ok_or(AppError::NotFound)?;
+    let back = format!("/p/{token}#item-{id}");
+    save_to_own_list(&state, &ctx, &item, f.target_list, &back).await
 }
 
 // ---------------------------------------------------------------- reservations

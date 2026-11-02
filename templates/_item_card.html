@@ -6,6 +6,15 @@
     <div class="item-top">
       <span class="prio prio-{{ iv.item.priority }}">{{ iv.item.priority_label() }}</span>
       {% if iv.item.quantity > 1 %}<span class="chip chip-small">wants {{ iv.item.quantity }}</span>{% endif %}
+      {% if !my_lists.is_empty() %}
+      <details class="item-menu">
+        <summary title="More options"><span aria-hidden="true">⋯</span><span class="sr-only">More options for {{ iv.item.title }}</span></summary>
+        <form method="post" action="{{ self.save_action(iv.item.id) }}" class="menu">
+          <div class="menu-head">Copy to one of my own lists</div>
+          {% for (lid, ltitle) in my_lists %}<button class="linklike" type="submit" name="target_list" value="{{ lid }}">{{ ltitle }}</button>{% endfor %}
+        </form>
+      </details>
+      {% endif %}
     </div>
     <h3>{% if let Some(u) = iv.item.url %}<a href="{{ u }}" target="_blank" rel="noopener noreferrer nofollow">{{ iv.item.title }}</a>{% else %}{{ iv.item.title }}{% endif %}</h3>
     <p class="item-meta">

@@ -219,6 +219,8 @@ pub struct ListPage {
     pub family_names: Vec<String>,
     pub public_url: Option<String>,
     pub guest_name: String,
+    /// The viewer's own lists (id, title) they can save a wish to; empty for editors and guests.
+    pub my_lists: Vec<(i64, String)>,
     pub sort: String,
     /// Months a gift-giver can pick for when the owner may see the reservation.
     pub reveal_options: Vec<MonthOption>,
@@ -257,6 +259,12 @@ impl ListPage {
         match (&self.public_view, &self.list.public_token) {
             (true, Some(tok)) => format!("/p/{tok}/items/{item_id}/claim"),
             _ => format!("/items/{item_id}/claim"),
+        }
+    }
+    pub fn save_action(&self, item_id: &i64) -> String {
+        match (&self.public_view, &self.list.public_token) {
+            (true, Some(tok)) => format!("/p/{tok}/items/{item_id}/save"),
+            _ => format!("/items/{item_id}/save"),
         }
     }
     pub fn unclaim_action(&self, claim_id: &i64) -> String {

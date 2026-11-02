@@ -1161,3 +1161,127 @@ async fn receiving_a_gift_you_reserved_on_your_own_list_records_it() {
     let shopping = mom.get("/reservations").await.body;
     assert!(shopping.contains("To buy") && shopping.contains("Fishing rod"));
 }
+
+#[tokio::test]
+async fn signed_in_viewers_can_save_wishes_to_their_own_lists() {
+    let app = test_app().await;
+    let (mut owner, mut mom, list_id, item_id) = family_with_item(&app).await;
+    owner
+        .post(
+            &format!("/items/{item_id}/edit"),
+            &[
+                ("title", "Fishing rod"),
+                ("price", "40.00"),
+                ("url", "https://shop.example.com/rod"),
+                ("notes", "Joe's size"),
+                ("priority", "1"),
+                ("quantity", "2"),
+            ],
+        )
+        .await;
+
+    // Without a list of her own there is nothing to offer.
+    let page = mom.get(&format!("/lists/{list_id}")).await.body;
+    assert!(!page.contains("Copy to one of my own lists"));
+
+    let r = mom.post("/lists", &[("title", "Mom's wishes")]).await;
+    let mine = id_from_location(r.location.as_deref().unwrap(), "/lists/");
+    let page = mom.get(&format!("/lists/{list_id}")).await.body;
+    assert!(page.contains("Copy to one of my own lists"));
+    assert!(page.contains(&format!("/items/{item_id}/save")));
+    // The owner already edits this list, so they get Copy/Move on the edit page instead.
+    let own_page = owner.get(&format!("/lists/{list_id}")).await.body;
+    assert!(!own_page.contains("Copy to one of my own lists"));
+
+    let r = mom
+        .post(
+            &format!("/items/{item_id}/save"),
+            &[("target_list", &mine.to_string())],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        r.location.as_deref(),
+        Some(format!("/lists/{list_id}#item-{item_id}").as_str())
+    );
+    let my_page = mom.get(&format!("/lists/{mine}")).await.body;
+    assert!(my_page.contains("Fishing rod") && my_page.contains("$40.00"));
+    assert!(my_page.contains("https://shop.example.com/rod"));
+    // Joe's notes, priority and quantity stay on Joe's list.
+    assert!(!my_page.contains("Joe&#x27;s size") && !my_page.contains("Joe's size"));
+    assert!(!my_page.contains("wants 2"));
+    assert_eq!(item_ids(&my_page).len(), 1);
+
+    // Saving it again doesn't add a second copy.
+    mom.post(
+        &format!("/items/{item_id}/save"),
+        &[("target_list", &mine.to_string())],
+    )
+    .await;
+    assert_eq!(
+        item_ids(&mom.get(&format!("/lists/{mine}")).await.body).len(),
+        1
+    );
+
+    // Only onto lists you manage, and only from lists you can see.
+    let r = mom
+        .post(
+            &format!("/items/{item_id}/save"),
+            &[("target_list", &list_id.to_string())],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    let mut stranger = Client::new(&app);
+    stranger.signup("Stranger", "stranger@example.com").await;
+    let r = stranger.post("/lists", &[("title", "Mine")]).await;
+    let theirs = id_from_location(r.location.as_deref().unwrap(), "/lists/");
+    let r = stranger
+        .post(
+            &format!("/items/{item_id}/save"),
+            &[("target_list", &theirs.to_string())],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+
+    // Through the public link, a signed-in visitor can save it too.
+    owner
+        .post(&format!("/lists/{list_id}/public"), &[("action", "enable")])
+        .await;
+    let share = owner.get(&format!("/lists/{list_id}/share")).await.body;
+    let start = share.find("/p/").unwrap() + 3;
+    let token: String = share[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    let page = stranger.get(&format!("/p/{token}")).await.body;
+    assert!(page.contains(&format!("/p/{token}/items/{item_id}/save")));
+    let r = stranger
+        .post(
+            &format!("/p/{token}/items/{item_id}/save"),
+            &[("target_list", &theirs.to_string())],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    let their_page = stranger.get(&format!("/lists/{theirs}")).await.body;
+    assert!(their_page.contains("Fishing rod"));
+
+    // Guests aren't offered it, and can't use it.
+    let mut guest = Client::new(&app);
+    assert!(!guest
+        .get(&format!("/p/{token}"))
+        .await
+        .body
+        .contains("Copy to one of my own lists"));
+    let r = guest
+        .post(
+            &format!("/p/{token}/items/{item_id}/save"),
+            &[("target_list", &theirs.to_string())],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    assert!(r.location.unwrap().starts_with("/login"));
+    assert_eq!(
+        item_ids(&stranger.get(&format!("/lists/{theirs}")).await.body).len(),
+        1
+    );
+}
