@@ -37,6 +37,16 @@ cargo run --release
 
 The database (`wishful.db`) is created and migrated automatically on startup.
 
+The app sends no email, so there is no "forgot password" link. To let someone back in, give their
+account a new random password and pass it on; they can change it on their account page. This also signs
+them out everywhere:
+
+```sh
+wishful_thinking reset-password sarah@example.com
+# with the same WT_DATABASE_URL the server uses, e.g. in production:
+WT_DATABASE_URL=sqlite:///srv/wishful/data/wishful.db /srv/wishful/wishful_thinking reset-password sarah@example.com
+```
+
 ### Configuration
 
 | Variable | Default | Purpose |

@@ -1,8 +1,28 @@
+use std::str::FromStr;
+
+use sqlx::sqlite::SqliteConnectOptions;
 use tracing_subscriber::EnvFilter;
-use wishful_thinking::{app, AppState, Config};
+use wishful_thinking::{app, auth, db, AppState, Config};
+
+const USAGE: &str = "usage: wishful_thinking [reset-password EMAIL]";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        [] => {}
+        ["reset-password", email] => return reset_password(email).await,
+        _ => {
+            eprintln!("{USAGE}");
+            std::process::exit(2);
+        }
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
@@ -44,5 +64,25 @@ async fn main() -> anyhow::Result<()> {
         listener.local_addr()?
     );
     axum::serve(listener, app(state)).await?;
+    Ok(())
+}
+
+/// `wishful_thinking reset-password EMAIL`: print a new password for the account and sign it
+/// out everywhere. The app sends no email, so this is how someone who forgot their password gets back in.
+async fn reset_password(email: &str) -> anyhow::Result<()> {
+    let config = Config::from_env()?;
+    // Pointed at the wrong place, connecting would create an empty database instead.
+    let opts = SqliteConnectOptions::from_str(&config.database_url)?;
+    let path = opts.get_filename();
+    anyhow::ensure!(
+        path.exists(),
+        "no database at {} (set WT_DATABASE_URL)",
+        path.display()
+    );
+    let db = db::connect(&config.database_url).await?;
+    match auth::reset_password(&db, email).await? {
+        Some(password) => println!("New password for {email}: {password}"),
+        None => anyhow::bail!("no account with email {email}"),
+    }
     Ok(())
 }
