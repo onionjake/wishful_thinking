@@ -5,7 +5,7 @@ use axum::http::{header, Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
-use wishful_thinking::{app, AppState, Config};
+use wishful_thinking::{app, auth, AppState, Config};
 
 struct Client {
     app: Router,
@@ -187,6 +187,47 @@ async fn signup_login_logout() {
         .await;
     assert_eq!(dup.status, StatusCode::OK);
     assert!(dup.body.contains("already exists"));
+}
+
+#[tokio::test]
+async fn reset_password_replaces_password_and_ends_sessions() {
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let db = state.db.clone();
+    let app = app(state);
+    let mut c = Client::new(&app);
+    c.signup("Sarah Lee", "sarah@example.com").await;
+    assert!(c.get("/").await.body.contains("Hi Sarah Lee"));
+
+    assert!(auth::reset_password(&db, "nobody@example.com")
+        .await
+        .unwrap()
+        .is_none());
+    let password = auth::reset_password(&db, " Sarah@Example.com ")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(password.len(), 12);
+
+    // Signed out, and only the new password works.
+    assert!(c.get("/").await.body.contains("Start a wish list"));
+    let old = c
+        .post(
+            "/login",
+            &[
+                ("email", "sarah@example.com"),
+                ("password", "correct horse"),
+            ],
+        )
+        .await;
+    assert_eq!(old.status, StatusCode::OK);
+    let new = c
+        .post(
+            "/login",
+            &[("email", "sarah@example.com"), ("password", &password)],
+        )
+        .await;
+    assert_eq!(new.status, StatusCode::SEE_OTHER);
+    assert!(c.get("/").await.body.contains("Hi Sarah Lee"));
 }
 
 #[tokio::test]

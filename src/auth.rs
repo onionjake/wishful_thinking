@@ -50,6 +50,36 @@ pub async fn verify_password(password: &str, hash: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// No 0/o or 1/l/i, so a reset password can be read out or typed in by hand.
+const RESET_PASSWORD_CHARS: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
+
+/// Give an account a new random password and end all its sessions. Returns the password,
+/// or `None` if no account has this email.
+pub async fn reset_password(db: &Db, email: &str) -> anyhow::Result<Option<String>> {
+    use rand::seq::SliceRandom;
+    let email = email.trim().to_lowercase();
+    let password: String = (0..12)
+        .map(|_| *RESET_PASSWORD_CHARS.choose(&mut rand::rngs::OsRng).unwrap() as char)
+        .collect();
+    let hash = hash_password(&password).await?;
+    let mut tx = db.begin().await?;
+    let user_id: Option<i64> =
+        sqlx::query_scalar("UPDATE users SET password_hash = ? WHERE email = ? RETURNING id")
+            .bind(hash)
+            .bind(&email)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(user_id) = user_id else {
+        return Ok(None);
+    };
+    sqlx::query("DELETE FROM sessions WHERE user_id = ?")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Some(password))
+}
+
 pub fn read_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get_all(COOKIE)
