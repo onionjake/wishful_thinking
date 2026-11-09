@@ -21,9 +21,20 @@
     </form>
   </section>
 </div>
-<section class="card">
+<section class="card" id="bookmarklet">
   <h2>Add-to-list button for your browser</h2>
-  <p class="muted">Drag this button to your bookmarks bar. When you're on any product page, click it to add the item to one of your lists.</p>
-  <p><a class="btn btn-ghost bookmarklet" href="javascript:void(location.href='{{ ctx.base_url }}/add?url='+encodeURIComponent(location.href))">🎁 Add to Wishful Thinking</a></p>
+  <p class="muted">On any store's product page, tap this bookmark to add the item to one of your lists. It reads the product from the page you're looking at, so it works even for stores like Walmart that block our importer with a robot check.</p>
+  <p><b>On a computer:</b> drag this button to your bookmarks bar.</p>
+  <p><a class="btn btn-ghost bookmarklet" href="{{ self.bookmarklet() }}">🎁 Add to Wishful Thinking</a></p>
+  <p><b>On a phone:</b></p>
+  <ol class="small">
+    <li>Copy the code below.</li>
+    <li>Bookmark this page (☆ in the browser menu), then edit that bookmark: name it <b>Wish</b> and replace its address with the code you copied.</li>
+    <li>On a product page, tap the address bar, type <b>Wish</b>, and tap the bookmark in the suggestions.</li>
+  </ol>
+  <div class="copy-row">
+    <input id="bookmarklet-code" value="{{ self.bookmarklet() }}" readonly aria-label="Bookmarklet code">
+    <button class="btn btn-small" type="button" data-copy="#bookmarklet-code">Copy</button>
+  </div>
 </section>
 {% endblock %}

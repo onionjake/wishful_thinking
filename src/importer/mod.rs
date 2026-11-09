@@ -9,6 +9,7 @@ pub mod extract;
 pub mod fetch;
 pub mod llm;
 pub mod price;
+pub mod snapshot;
 
 use std::sync::Arc;
 
@@ -17,6 +18,7 @@ use url::Url;
 
 use extract::{ProductInfo, Source};
 use llm::{LlmMode, LlmProduct, LlmProvider};
+use snapshot::PageSnapshot;
 
 /// Characters of page digest sent to the model.
 const DIGEST_CHARS: usize = 24_000;
@@ -110,7 +112,7 @@ impl Importer {
 
         if extract::is_bot_wall(&html, &final_url) {
             outcome.warnings.push(
-                "This store showed a robot check instead of the product, so we couldn't read it. Please fill in the rest — for the picture, long-press the product photo on the store's page, choose \"Copy image address\", and paste it into Picture URL."
+                "This store showed us a robot check instead of the product. Open the product in your browser and use the \"Add to Wishful Thinking\" bookmark instead (set it up on your Account page), or fill in the details by hand."
                     .into(),
             );
             guess_title_from_url(&mut outcome.info, &url);
@@ -125,10 +127,51 @@ impl Importer {
             return Ok(outcome);
         }
 
+        Ok(self.read_page(outcome, &url, &final_url, &html).await)
+    }
+
+    /// Import from product data the bookmarklet gathered in the user's browser, for stores
+    /// that block server-side requests. The page itself is never fetched.
+    pub async fn import_snapshot(
+        &self,
+        raw_url: &str,
+        page: &PageSnapshot,
+    ) -> Result<ImportOutcome, fetch::FetchError> {
+        let url = fetch::validate_url(raw_url, self.allow_private)?;
+        let outcome = ImportOutcome {
+            url: url.to_string(),
+            info: ProductInfo {
+                store: extract::store_from_url(&url),
+                ..Default::default()
+            },
+            llm_used: None,
+            warnings: Vec::new(),
+        };
+        let html = page.to_html();
+        if extract::is_bot_wall(&html, &url) {
+            let mut outcome = outcome;
+            outcome.warnings.push(
+                "That tab was showing the store's robot check. Finish the check in your browser, then tap the bookmark again once you can see the product."
+                    .into(),
+            );
+            guess_title_from_url(&mut outcome.info, &url);
+            return Ok(outcome);
+        }
+        Ok(self.read_page(outcome, &url, &url, &html).await)
+    }
+
+    /// Extract product details from a page's HTML, with the Shopify and LLM fallbacks.
+    async fn read_page(
+        &self,
+        mut outcome: ImportOutcome,
+        url: &Url,
+        final_url: &Url,
+        html: &str,
+    ) -> ImportOutcome {
         outcome.url = final_url.to_string();
-        outcome.info = extract::extract(&html, &final_url);
+        outcome.info = extract::extract(html, final_url);
         if !outcome.info.is_complete() {
-            self.shopify_fallback(&mut outcome.info, &html, &final_url)
+            self.shopify_fallback(&mut outcome.info, html, final_url)
                 .await;
         }
 
@@ -138,10 +181,10 @@ impl Importer {
             LlmMode::Always => true,
         };
         if let (true, Some(llm)) = (want_llm, &self.llm) {
-            let digest = extract::page_digest(&html, &final_url, DIGEST_CHARS);
+            let digest = extract::page_digest(html, final_url, DIGEST_CHARS);
             match llm.extract_product(&digest).await {
                 Ok(product) => {
-                    merge_llm(&mut outcome.info, product, &final_url, &html);
+                    merge_llm(&mut outcome.info, product, final_url, html);
                     outcome.llm_used = Some(llm.label());
                 }
                 Err(e) => {
@@ -159,8 +202,8 @@ impl Importer {
                     .into(),
             );
         }
-        guess_title_from_url(&mut outcome.info, &url);
-        Ok(outcome)
+        guess_title_from_url(&mut outcome.info, url);
+        outcome
     }
 
     /// Shopify stores expose every product as JSON at `/products/<handle>.js`, which has the

@@ -88,6 +88,7 @@ pub fn router(state: AppState) -> Router {
         .route("/history/{id}/delete", post(items::delete_history))
         .route("/add", get(items::add_page))
         .route("/api/import", post(items::import_api))
+        .route("/api/import-page", post(items::import_page_api))
         // families
         .route(
             "/families",

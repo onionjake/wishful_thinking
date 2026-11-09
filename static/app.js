@@ -78,62 +78,83 @@
   }
   if (imageInput) imageInput.addEventListener("change", function () { showPreview(imageInput.value.trim()); });
 
+  // Bookmarklet hand-off: the store page's details arrive in the URL fragment (#clip=…),
+  // which never reaches the server. Keep it when picking a list on /add.
+  var clip = location.hash.indexOf("#clip=") === 0 ? location.hash.slice(6) : null;
+  if (clip) {
+    document.querySelectorAll("a[data-keep-hash]").forEach(function (a) { a.href += location.hash; });
+  }
+
   // Import without a page reload: fill the item form in place.
   var importForm = document.querySelector("form[data-import]");
   var itemForm = document.querySelector("form[data-item-form]");
   var status = document.querySelector("[data-import-status]");
   if (importForm && itemForm && window.fetch) {
+    var urlInput = importForm.querySelector("input[name=url]");
     importForm.addEventListener("submit", function (e) {
-      var url = importForm.querySelector("input[name=url]").value.trim();
+      var url = urlInput.value.trim();
       if (!url) return;
       e.preventDefault();
-      importForm.classList.add("loading");
-      status.innerHTML = '<p class="muted small">Reading the page…</p>';
-      fetch("/api/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: url }),
-        credentials: "same-origin"
-      })
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          importForm.classList.remove("loading");
-          status.innerHTML = "";
-          if (!data.ok) {
-            addMsg("form-error", data.error || "Import failed");
-            setField("url", data.url);
-            return;
-          }
-          var set = function (name, value) { if (value) setField(name, value); };
-          set("url", data.url);
-          set("title", data.title);
-          set("price", data.price);
-          set("store", data.store);
-          set("image_url", data.image_url);
-          set("import_source", data.import_source);
-          if (data.currency) {
-            var sel = itemForm.querySelector("select[name=currency]");
-            if (![].some.call(sel.options, function (o) { return o.value === data.currency; })) {
-              var opt = document.createElement("option");
-              opt.textContent = data.currency;
-              sel.appendChild(opt);
-            }
-            sel.value = data.currency;
-          }
-          if (data.image_url) showPreview(data.image_url);
-          if (data.found.length) {
-            addMsg("notice", "✨ Found " + data.found.join(", ") + (data.llm_used ? " (with help from " + data.llm_used + ")" : "") + ". Check the details below, then save.");
-          }
-          (data.warnings || []).forEach(function (w) { addMsg("warning", w); });
-          var title = itemForm.querySelector("input[name=title]");
-          if (title) title.focus();
-        })
-        .catch(function () {
-          importForm.classList.remove("loading");
-          status.innerHTML = "";
-          addMsg("form-error", "Couldn't reach the server. Try again.");
-        });
+      runImport("/api/import", { url: url });
     });
+    var fromBookmarklet = /[?&]clip=1/.test(location.search);
+    if (fromBookmarklet) {
+      // Tidy the address bar so a reload doesn't repeat the hand-off.
+      history.replaceState(null, "", location.pathname + location.search.replace(/&?clip=1/, "").replace(/\?$/, ""));
+      var page = null;
+      try { page = clip && JSON.parse(decodeURIComponent(clip)); } catch (err) { page = null; }
+      var url = urlInput.value.trim();
+      if (page && url) runImport("/api/import-page", { url: url, page: page });
+      else if (url) runImport("/api/import", { url: url });
+    }
+  }
+  function runImport(endpoint, body) {
+    importForm.classList.add("loading");
+    status.innerHTML = '<p class="muted small">Reading the page…</p>';
+    fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      credentials: "same-origin"
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        importForm.classList.remove("loading");
+        status.innerHTML = "";
+        if (!data.ok) {
+          addMsg("form-error", data.error || "Import failed");
+          setField("url", data.url);
+          return;
+        }
+        var set = function (name, value) { if (value) setField(name, value); };
+        set("url", data.url);
+        set("title", data.title);
+        set("price", data.price);
+        set("store", data.store);
+        set("image_url", data.image_url);
+        set("import_source", data.import_source);
+        if (data.currency) {
+          var sel = itemForm.querySelector("select[name=currency]");
+          if (![].some.call(sel.options, function (o) { return o.value === data.currency; })) {
+            var opt = document.createElement("option");
+            opt.textContent = data.currency;
+            sel.appendChild(opt);
+          }
+          sel.value = data.currency;
+        }
+        if (data.image_url) showPreview(data.image_url);
+        if (data.found.length) {
+          addMsg("notice", "✨ Found " + data.found.join(", ") + (data.llm_used ? " (with help from " + data.llm_used + ")" : "") + ". Check the details below, then save.");
+        }
+        (data.warnings || []).forEach(function (w) { addMsg("warning", w); });
+        var title = itemForm.querySelector("input[name=title]");
+        if (title) title.focus();
+      })
+      .catch(function () {
+        importForm.classList.remove("loading");
+        status.innerHTML = "";
+        addMsg("form-error", "Couldn't reach the server. Try again.");
+      });
   }
   function setField(name, value) {
     var el = itemForm.querySelector("[name=" + name + "]");

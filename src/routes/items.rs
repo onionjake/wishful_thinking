@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::auth::{self, redirect_flash};
 use crate::db::{self, Gift, Item, Wishlist};
 use crate::error::{AppError, AppResult};
+use crate::importer::snapshot::PageSnapshot;
 use crate::importer::{amazon_list, price, ImportOutcome};
 use crate::routes::lists::editable_list;
 use crate::templates::{
@@ -74,6 +75,9 @@ fn values_from_item(item: &Item) -> ItemFormValues {
 #[derive(Deserialize, Default)]
 pub struct NewItemQuery {
     url: Option<String>,
+    /// Set by the bookmarklet, which hands the page's details to the browser-side script
+    /// instead of having the server fetch the page.
+    clip: Option<String>,
 }
 
 pub async fn new_item_page(
@@ -92,14 +96,18 @@ pub async fn new_item_page(
     let mut import = None;
     let mut import_error = None;
     if let Some(url) = util::non_empty(q.url.as_deref()) {
-        match state.importer.import(&url).await {
-            Ok(outcome) => {
-                form = values_from_import(&outcome);
-                import = Some(outcome);
-            }
-            Err(e) => {
-                form.url = url;
-                import_error = Some(e.to_string());
+        if q.clip.is_some() {
+            form.url = url;
+        } else {
+            match state.importer.import(&url).await {
+                Ok(outcome) => {
+                    form = values_from_import(&outcome);
+                    import = Some(outcome);
+                }
+                Err(e) => {
+                    form.url = url;
+                    import_error = Some(e.to_string());
+                }
             }
         }
     }
@@ -1144,6 +1152,7 @@ pub async fn delete_history(
 #[derive(Deserialize, Default)]
 pub struct AddQuery {
     url: Option<String>,
+    clip: Option<String>,
 }
 
 /// Target of the "Add to Wishful Thinking" bookmarklet: pick a list for the current page.
@@ -1159,15 +1168,23 @@ pub async fn add_page(
         .filter(|l| !l.archived)
         .collect();
     let url = q.url.unwrap_or_default();
+    let clip = q.clip.is_some();
     if lists.len() == 1 && !url.is_empty() {
+        // Browsers carry the bookmarklet's #clip=… data across this redirect.
         return Ok(axum::response::Redirect::to(&format!(
-            "/lists/{}/items/new?url={}",
+            "/lists/{}/items/new?url={}{}",
             lists[0].id,
-            util::urlencode(&url)
+            util::urlencode(&url),
+            if clip { "&clip=1" } else { "" }
         ))
         .into_response());
     }
-    render(AddPage { ctx, url, lists })
+    render(AddPage {
+        ctx,
+        url,
+        clip,
+        lists,
+    })
 }
 
 pub async fn import_list_page(
@@ -1307,7 +1324,33 @@ pub async fn import_api(
     Json(req): Json<ImportRequest>,
 ) -> AppResult<Json<ImportResponse>> {
     ctx.require_user()?;
-    Ok(Json(match state.importer.import(&req.url).await {
+    let result = state.importer.import(&req.url).await;
+    Ok(Json(import_response(result, req.url)))
+}
+
+#[derive(Deserialize)]
+pub struct PageImportRequest {
+    url: String,
+    page: PageSnapshot,
+}
+
+/// Like [`import_api`], but reads product data the bookmarklet collected in the user's own
+/// browser instead of fetching the page, so stores that block servers still work.
+pub async fn import_page_api(
+    State(state): State<AppState>,
+    ctx: Ctx,
+    Json(req): Json<PageImportRequest>,
+) -> AppResult<Json<ImportResponse>> {
+    ctx.require_user()?;
+    let result = state.importer.import_snapshot(&req.url, &req.page).await;
+    Ok(Json(import_response(result, req.url)))
+}
+
+fn import_response(
+    result: Result<ImportOutcome, crate::importer::fetch::FetchError>,
+    url: String,
+) -> ImportResponse {
+    match result {
         Ok(outcome) => {
             let v = values_from_import(&outcome);
             let mut found = vec![];
@@ -1341,7 +1384,7 @@ pub async fn import_api(
         Err(e) => ImportResponse {
             ok: false,
             error: Some(e.to_string()),
-            url: req.url,
+            url,
             title: String::new(),
             price: String::new(),
             currency: String::new(),
@@ -1352,5 +1395,5 @@ pub async fn import_api(
             warnings: vec![],
             found: vec![],
         },
-    }))
+    }
 }
