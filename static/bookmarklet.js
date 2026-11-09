@@ -1,6 +1,6 @@
 // "Add to Wishful Thinking" bookmarklet. Runs on a store's product page in the user's own
 // browser, copies the product details the page already contains, and opens the add-a-wish
-// form with them, so stores that block our server (robot checks) still import fully.
+// form with them in a new tab, so stores that block our server (robot checks) still import fully.
 //
 // Built into a javascript: URL by templates::bookmarklet(): full-line comments and line
 // breaks are removed and __BASE__ becomes the site address. Keep every statement ended with
@@ -37,5 +37,9 @@
     if (e) p.price = cut(e.getAttribute("content") || e.textContent, 80);
   }
   p.text = cut((d.querySelector("main") || d.body || {}).innerText, 6000);
-  location.href = __BASE__ + "/add?clip=1&url=" + encodeURIComponent(location.href) + "\x23clip=" + encodeURIComponent(JSON.stringify(p));
+  var u = __BASE__ + "/add?clip=1&url=" + encodeURIComponent(location.href) + "\x23clip=" + encodeURIComponent(JSON.stringify(p));
+  // A new tab keeps the shopper's place in the store; close it after saving to get back.
+  // If the browser blocks the tab, use this one instead.
+  var w = window.open(u, "_blank");
+  if (w) { try { w.opener = null; } catch (e) {} } else { location.href = u; }
 })();

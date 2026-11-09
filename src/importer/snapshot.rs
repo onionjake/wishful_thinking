@@ -186,6 +186,39 @@ mod tests {
         );
     }
 
+    /// What a real Walmart product page offered in Firefox: no Product JSON-LD, but
+    /// OpenGraph tags and an `itemprop="price"` outside any Product scope.
+    #[test]
+    fn walmart_page_without_product_json_ld() {
+        let img = "https://i5.walmartimages.com/seo/Mini-Brands-Fill-the-Fridge-Mini-Series-1-Capsule_09b27dc3.jpeg";
+        let snap = PageSnapshot {
+            title: "Mini Brands Fill the Fridge Mini Series 1 Capsule, Plastic - Walmart.com".into(),
+            meta: vec![
+                ("og:title".into(), "Mini Brands Fill the Fridge Mini Series 1 Capsule by ZURU - Surprise Unbox Collectible Toy for Kids Ages 8+ - Walmart.com".into()),
+                ("og:type".into(), "product.item".into()),
+                ("og:image".into(), img.into()),
+                ("og:site_name".into(), "Walmart.com".into()),
+            ],
+            json_ld: vec![
+                r#"{"@context":"https://schema.org","@type":"WebPage","speakable":{"@type":"SpeakableSpecification"}}"#.into(),
+            ],
+            h1: "Mini Brands Fill the Fridge Mini Series 1 Capsule by ZURU - Surprise Unbox Collectible Toy for Kids Ages 8+".into(),
+            price: "$7.97".into(),
+            image: img.into(),
+            ..Default::default()
+        };
+        let url = Url::parse("https://www.walmart.com/ip/Mini-Brands-Fill-the-Fridge-Mini-Series-1-Capsule-by-ZURU-Surprise-Unbox-Collectible-Toy-for-Kids-Ages-8/15094307760").unwrap();
+        let info = extract::extract(&snap.to_html(), &url);
+        assert_eq!(
+            info.title.as_deref(),
+            Some("Mini Brands Fill the Fridge Mini Series 1 Capsule by ZURU - Surprise Unbox Collectible Toy for Kids Ages 8+")
+        );
+        assert_eq!(info.price_cents, Some(797));
+        assert_eq!(info.currency.as_deref(), Some("USD"));
+        assert_eq!(info.image_url.as_deref(), Some(img));
+        assert!(info.is_complete());
+    }
+
     #[test]
     fn page_content_cannot_break_out_of_the_document() {
         let snap = PageSnapshot {

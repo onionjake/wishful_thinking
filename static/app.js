@@ -79,10 +79,21 @@
   if (imageInput) imageInput.addEventListener("change", function () { showPreview(imageInput.value.trim()); });
 
   // Bookmarklet hand-off: the store page's details arrive in the URL fragment (#clip=…),
-  // which never reaches the server. Keep it when picking a list on /add.
+  // which never reaches the server. Browsers drop the fragment when a form is posted (signing
+  // in on the way, for instance), so park it in this tab's sessionStorage until the item form
+  // picks it up. Also keep it on the list links on /add.
   var clip = location.hash.indexOf("#clip=") === 0 ? location.hash.slice(6) : null;
   if (clip) {
+    try { sessionStorage.setItem("wt-clip", clip); } catch (err) { /* storage unavailable */ }
     document.querySelectorAll("a[data-keep-hash]").forEach(function (a) { a.href += location.hash; });
+  }
+  function takeClip() {
+    var data = clip;
+    try {
+      data = data || sessionStorage.getItem("wt-clip");
+      sessionStorage.removeItem("wt-clip");
+    } catch (err) { /* storage unavailable */ }
+    return data;
   }
 
   // Import without a page reload: fill the item form in place.
@@ -101,8 +112,8 @@
     if (fromBookmarklet) {
       // Tidy the address bar so a reload doesn't repeat the hand-off.
       history.replaceState(null, "", location.pathname + location.search.replace(/&?clip=1/, "").replace(/\?$/, ""));
-      var page = null;
-      try { page = clip && JSON.parse(decodeURIComponent(clip)); } catch (err) { page = null; }
+      var page = null, data = takeClip();
+      try { page = data && JSON.parse(decodeURIComponent(data)); } catch (err) { page = null; }
       var url = urlInput.value.trim();
       if (page && url) runImport("/api/import-page", { url: url, page: page });
       else if (url) runImport("/api/import", { url: url });
