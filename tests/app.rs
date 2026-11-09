@@ -86,6 +86,15 @@ impl Client {
         self.send(req).await
     }
 
+    async fn post_json(&mut self, path: &str, json: &serde_json::Value) -> Resp {
+        let req = Request::post(path)
+            .header(header::COOKIE, self.cookie_header())
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json.to_string()))
+            .unwrap();
+        self.send(req).await
+    }
+
     async fn signup(&mut self, name: &str, email: &str) {
         let r = self
             .post(
@@ -1385,4 +1394,90 @@ async fn reserved_wishes_sink_below_open_ones() {
     assert!(!page.contains("Already reserved"));
     let rod = page.find(&format!("id=\"item-{rod_id}\"")).unwrap();
     assert!(page[rod..].contains("Jigsaw puzzle"));
+}
+
+#[tokio::test]
+async fn bookmarklet_imports_from_the_page_in_the_browser() {
+    let app = test_app().await;
+    let mut user = Client::new(&app);
+    user.signup("Sam", "sam@example.com").await;
+    let r = user.post("/lists", &[("title", "Christmas")]).await;
+    let list_id = id_from_location(&r.location.unwrap(), "/lists/");
+
+    // The account page offers the bookmarklet, pointed at this site.
+    let account = user.get("/account").await.body;
+    assert!(account.contains("javascript:(function"));
+    assert!(account.contains("/add?clip=1&amp;url="));
+
+    // With one list, /add goes straight to the form and keeps the clip flag; the server
+    // doesn't fetch the store page itself.
+    let page_url = "https://www.walmart.com/ip/15094307760?sid=abc";
+    let r = user
+        .get(&format!("/add?clip=1&url={}", urlencode(page_url)))
+        .await;
+    let loc = r.location.expect("redirect to the form");
+    assert_eq!(
+        loc,
+        format!(
+            "/lists/{list_id}/items/new?url={}&clip=1",
+            urlencode(page_url)
+        )
+    );
+    let form = user.get(&loc).await;
+    assert_eq!(form.status, StatusCode::OK);
+    assert!(form.body.contains("walmart.com/ip/15094307760"));
+    assert!(!form.body.contains("robot check"));
+
+    // The browser then posts what the bookmarklet saw on the page.
+    let r = user
+        .post_json(
+            "/api/import-page",
+            &serde_json::json!({
+                "url": page_url,
+                "page": {
+                    "title": "Mini Brands - Walmart.com",
+                    "meta": [["og:image", "https://i5.walmartimages.com/seo/mini.jpeg"]],
+                    "json_ld": [r#"{"@type":"Product","name":"Zuru 5 Surprise Mini Brands","offers":{"price":"9.97","priceCurrency":"USD"}}"#],
+                }
+            }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let data: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+    assert_eq!(data["ok"], true);
+    assert_eq!(data["title"], "Zuru 5 Surprise Mini Brands");
+    assert_eq!(data["price"], "9.97");
+    assert_eq!(
+        data["image_url"],
+        "https://i5.walmartimages.com/seo/mini.jpeg"
+    );
+    assert_eq!(data["store"], "Walmart");
+
+    // A tab still stuck on the robot check gets a helpful warning, not a bogus title.
+    let r = user
+        .post_json(
+            "/api/import-page",
+            &serde_json::json!({"url": "https://www.walmart.com/blocked?url=x", "page": {"title": "Robot or human?"}}),
+        )
+        .await;
+    let data: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+    assert_ne!(data["title"], "Robot or human?");
+    assert!(data["warnings"][0]
+        .as_str()
+        .unwrap()
+        .contains("robot check"));
+
+    // Signed-out visitors can't use it.
+    let mut guest = Client::new(&app);
+    let r = guest
+        .post_json(
+            "/api/import-page",
+            &serde_json::json!({"url": page_url, "page": {}}),
+        )
+        .await;
+    assert_ne!(r.status, StatusCode::OK);
+}
+
+fn urlencode(s: &str) -> String {
+    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }

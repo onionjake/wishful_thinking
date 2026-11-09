@@ -143,6 +143,26 @@ pub struct AccountPage {
     pub error: Option<String>,
 }
 
+impl AccountPage {
+    /// The "Add to Wishful Thinking" bookmarklet as a `javascript:` URL.
+    pub fn bookmarklet(&self) -> String {
+        bookmarklet(&self.ctx.base_url)
+    }
+}
+
+/// Build the bookmarklet from `static/bookmarklet.js`: drop comments and line breaks, and
+/// point it at this site.
+pub fn bookmarklet(base_url: &str) -> String {
+    let src = include_str!("../static/bookmarklet.js");
+    let code: Vec<&str> = src
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with("//"))
+        .collect();
+    let base = serde_json::to_string(base_url.trim_end_matches('/')).unwrap_or_default();
+    format!("javascript:{}", code.join(" ").replace("__BASE__", &base))
+}
+
 #[derive(Template)]
 #[template(path = "list_form.html")]
 pub struct ListFormPage {
@@ -464,5 +484,20 @@ pub struct ListImportPage {
 pub struct AddPage {
     pub ctx: Ctx,
     pub url: String,
+    /// Came from the bookmarklet with page data in the URL fragment.
+    pub clip: bool,
     pub lists: Vec<ListSummary>,
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn bookmarklet_is_a_safe_javascript_url() {
+        let b = super::bookmarklet("https://wish.example.com/");
+        assert!(b.starts_with("javascript:(function"));
+        assert!(b.contains(r#""https://wish.example.com" + "/add?clip=1&url=""#));
+        // Browsers percent-decode javascript: URLs and treat # as a fragment.
+        assert!(!b.contains('%') && !b.contains('#'), "{b}");
+        assert!(!b.contains('\n') && !b.contains("__BASE__"));
+    }
 }

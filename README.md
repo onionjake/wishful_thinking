@@ -20,12 +20,15 @@ Wish lists for the whole family, written in Rust with SQLite.
   look up who a gift is for. It keeps its own copy of each gift, so it survives the list being changed or deleted.
 - **Import from any URL.** Paste a product link and the name, price, currency, photo and store are filled in.
   An LLM can optionally help with pages that have no structured data (see below).
+- **Add-to-list bookmarklet.** From the Account page, add a bookmark that reads the product from the
+  page you're looking at. Because it runs in your own browser, it works for stores like Walmart that
+  show our server a robot check instead of the product.
 - **Import an Amazon wish list.** Paste the link to a public or shared list and every item is copied over,
   including its comment, priority and quantity. Importing again only adds what's new.
 - Also included: priorities (*Most wanted / Would love / Nice to have*), quantities ("wants 2"), list
   co-managers (e.g. both parents, or the child themselves), *Got it ✓* for received gifts, copying or moving items between lists,
   *Copy to one of my own lists* (in a wish's ⋯ menu) to save something you spot on someone else's list,
-  sorting, archiving, a browser bookmarklet, dark mode, and a mobile layout. It can be installed as an app
+  sorting, archiving, dark mode, and a mobile layout. It can be installed as an app
   (*Add to Home Screen* on phones, *Install* in desktop Chrome/Edge); it still needs a connection to work.
 
 ## Running
