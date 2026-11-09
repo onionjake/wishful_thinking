@@ -1221,7 +1221,8 @@ pub async fn import_list(
         .collect();
     let (mut added, mut duplicates) = (0, 0);
     let mut tx = state.db.begin().await?;
-    for item in &imported.items {
+    // Lists show newest first, so insert bottom-up to keep the order Amazon shows.
+    for item in imported.items.iter().rev() {
         if !seen.insert(wish_key(item.url.as_deref(), &item.title)) {
             duplicates += 1;
             continue;
