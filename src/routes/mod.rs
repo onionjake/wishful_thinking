@@ -22,7 +22,10 @@ pub fn router(state: AppState) -> Router {
         .route("/apple-touch-icon.png", get(pages::apple_touch_icon))
         .route("/static/icon-192.png", get(pages::icon_192))
         .route("/static/icon-512.png", get(pages::icon_512))
-        .route("/static/icon-maskable-512.png", get(pages::icon_maskable_512))
+        .route(
+            "/static/icon-maskable-512.png",
+            get(pages::icon_maskable_512),
+        )
         .route("/healthz", get(|| async { "ok" }))
         // accounts
         .route("/signup", get(account::signup_page).post(account::signup))

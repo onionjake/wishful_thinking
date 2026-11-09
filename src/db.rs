@@ -225,7 +225,7 @@ pub const ITEM_SELECT: &str =
 
 pub async fn items_for_list(db: &Db, list_id: i64) -> sqlx::Result<Vec<Item>> {
     sqlx::query_as::<_, Item>(&format!(
-        "{ITEM_SELECT} WHERE i.wishlist_id = ? ORDER BY i.received, i.priority, i.id"
+        "{ITEM_SELECT} WHERE i.wishlist_id = ? ORDER BY i.received, i.priority, i.id DESC"
     ))
     .bind(list_id)
     .fetch_all(db)

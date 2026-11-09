@@ -110,7 +110,7 @@ impl Importer {
 
         if extract::is_bot_wall(&html, &final_url) {
             outcome.warnings.push(
-                "This store showed a robot check instead of the product, so we couldn't read it. We've guessed what we can — please fill in the rest."
+                "This store showed a robot check instead of the product, so we couldn't read it. Please fill in the rest — for the picture, long-press the product photo on the store's page, choose \"Copy image address\", and paste it into Picture URL."
                     .into(),
             );
             guess_title_from_url(&mut outcome.info, &url);

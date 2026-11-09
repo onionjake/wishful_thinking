@@ -1099,7 +1099,9 @@ async fn installable_as_a_web_app() {
     let app = test_app().await;
     let mut c = Client::new(&app);
     let home = c.get("/").await;
-    assert!(home.body.contains(r#"<link rel="manifest" href="/manifest.webmanifest">"#));
+    assert!(home
+        .body
+        .contains(r#"<link rel="manifest" href="/manifest.webmanifest">"#));
     assert!(home.body.contains(r#"href="/apple-touch-icon.png""#));
 
     let r = c.get("/manifest.webmanifest").await;
@@ -1152,8 +1154,9 @@ async fn receiving_a_gift_you_reserved_on_your_own_list_records_it() {
         mom.post(&format!("/lists/{maya_list}/items"), &[("title", title)])
             .await;
     }
+    // Newest wishes are listed first.
     let ids = item_ids(&mom.get(&format!("/lists/{maya_list}")).await.body);
-    let (robot, puzzle) = (ids[0], ids[1]);
+    let (puzzle, robot) = (ids[0], ids[1]);
     mom.post(&format!("/items/{robot}/claim"), &[]).await;
 
     // When it arrives she taps "Got it ✓" rather than "Mark bought"; it still counts as bought.
@@ -1328,13 +1331,34 @@ async fn signed_in_viewers_can_save_wishes_to_their_own_lists() {
 }
 
 #[tokio::test]
+async fn new_wishes_show_first_within_their_priority() {
+    let app = test_app().await;
+    let (mut owner, _, list_id, rod_id) = family_with_item(&app).await;
+    owner
+        .post(
+            &format!("/lists/{list_id}/items"),
+            &[("title", "Kite"), ("priority", "2")],
+        )
+        .await;
+    let page = owner.get(&format!("/lists/{list_id}")).await.body;
+    let ids = item_ids(&page);
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], rod_id, "the newly added kite comes first");
+    assert!(page.find("Kite").unwrap() < page.find("Fishing rod").unwrap());
+}
+
+#[tokio::test]
 async fn reserved_wishes_sink_below_open_ones() {
     let app = test_app().await;
     let (mut owner, mut buyer, list_id, rod_id) = family_with_item(&app).await;
     owner
         .post(
             &format!("/lists/{list_id}/items"),
-            &[("title", "Jigsaw puzzle"), ("price", "15.00")],
+            &[
+                ("title", "Jigsaw puzzle"),
+                ("price", "15.00"),
+                ("priority", "3"),
+            ],
         )
         .await;
     let page = buyer.get(&format!("/lists/{list_id}")).await.body;
