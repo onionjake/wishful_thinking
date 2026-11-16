@@ -88,7 +88,9 @@ async fn reset_pictures() -> anyhow::Result<()> {
     let db = existing_db().await?;
     let storage = wishful_thinking::storage::Storage::open(&Config::from_env()?.storage_url)?;
     let detached = images::reset_all(&db, &storage).await?;
-    println!("Forgot the stored pictures of {detached} wishes and gifts; the server will download them again.");
+    println!(
+        "Reset the pictures of {detached} wishes and gifts. Restart the server; it will download them again."
+    );
     Ok(())
 }
 

@@ -124,8 +124,9 @@ store. It works much like Rails' ActiveStorage:
   worker then downloads it (4 at a time, 10 s each, up to 10 MB, through the same SSRF-safe client
   as the importer, taking turns between people so no one can hold up everyone else) and checks by
   its bytes that it's a JPEG, PNG, GIF or WebP. Until it's stored, or if all 6 attempts fail (waiting 1, 2,
-  4, 8 and 16 hours between them, so outages don't use them up), pages show the original
-  address. Problems on our side (disk, database) don't use up attempts; they're retried an hour later.
+  4, 8 and 16 hours between them, so a short outage doesn't use them up), pages show the original
+  address. Problems on our side (disk, database) don't use up attempts; they're retried after the
+  same wait. After a longer outage, `reset-pictures` (below) gives every picture fresh attempts.
 - The worker decodes the picture (one at a time, applying EXIF rotation) and stores the two sizes
   pages use: `/images/<key>/thumb` (fits 160px, for rows) and `/images/<key>/card` (fits 480px,
   for item cards and list previews). Pictures with transparency stay PNG; the rest become JPEG,
@@ -154,9 +155,10 @@ store. It works much like Rails' ActiveStorage:
   product link often serves a placeholder), so the sizes that survived keep being served. If no
   size survives, the wishes download their original address again like new ones. Page requests
   never decode anything, never redirect elsewhere, and can't make the app forget a picture.
-- If the store really was lost or replaced, `wishful_thinking reset-pictures` (with the server's
-  `WT_DATABASE_URL` and `WT_STORAGE_URL`) forgets every stored picture and pairs the database with
-  the store as it is now; the worker then downloads everything again.
+- If the store really was lost or replaced, or a long outage used up pictures' attempts,
+  `wishful_thinking reset-pictures` (with the server's `WT_DATABASE_URL` and `WT_STORAGE_URL`)
+  forgets every stored picture, gives every picture fresh attempts and pairs the database with the
+  store as it is now. Restart the server afterwards; it downloads everything again.
 - Pictures existing before this feature are picked up by the same worker on startup.
 
 To add a size, add a `Variant` in `src/images.rs`. The worker downloads stored pictures again to

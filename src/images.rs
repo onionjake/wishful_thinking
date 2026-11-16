@@ -171,16 +171,19 @@ pub async fn confirm_missing(state: &AppState) -> anyhow::Result<usize> {
     Ok(forgotten)
 }
 
-/// Forget every stored picture, so each wish shows its original address and downloads it again,
-/// and pair the database with `storage` as it is now. For when the store was really lost or
+/// Forget every stored picture, so each wish shows its original address and downloads it again
+/// (with fresh attempts, including pictures that never got stored), and pair the database with
+/// `storage` as it is now. For when the store was really lost or
 /// replaced (`wishful_thinking reset-pictures`).
 pub async fn reset_all(db: &crate::db::Db, storage: &storage::Storage) -> anyhow::Result<u64> {
     let mut tx = db.begin().await?;
     let mut detached = 0;
     for table in TABLES {
+        // Every picture, stored or not, gets a fresh set of attempts: this is also the way back
+        // after an outage long enough to use them all up.
         detached += sqlx::query(&format!(
             "UPDATE {table} SET image_blob_id = NULL, image_attempts = 0, image_attempted_at = NULL
-              WHERE image_blob_id IS NOT NULL"
+              WHERE image_url IS NOT NULL"
         ))
         .execute(&mut *tx)
         .await?
@@ -673,7 +676,8 @@ async fn save_variants(
             "INSERT INTO blob_variants (blob_id, name, key, content_type, byte_size)
              SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM blobs WHERE id = ?1)
              ON CONFLICT(blob_id, name) DO UPDATE SET key = excluded.key,
-                 content_type = excluded.content_type, byte_size = excluded.byte_size",
+                 content_type = excluded.content_type, byte_size = excluded.byte_size,
+                 missing_at = NULL",
         )
         .bind(blob_id)
         .bind(variant.name())
