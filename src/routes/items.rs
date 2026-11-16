@@ -250,10 +250,11 @@ pub async fn create_item(
             });
         }
     };
-    sqlx::query(
+    let added = sqlx::query(&format!(
         "INSERT INTO items (wishlist_id, title, url, image_url, price_cents, currency, store, notes, priority, quantity, import_source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11 WHERE {}",
+        db::list_has_room("?1")
+    ))
     .bind(list_id)
     .bind(&clean.title)
     .bind(&clean.url)
@@ -266,7 +267,22 @@ pub async fn create_item(
     .bind(clean.quantity)
     .bind(&clean.import_source)
     .execute(&state.db)
-    .await?;
+    .await?
+    .rows_affected();
+    if added == 0 {
+        let other_lists = other_lists(&state, user.id, list.id).await?;
+        let error = Some(db::list_full_message(&list.title));
+        return render(ItemFormPage {
+            ctx,
+            list,
+            item_id: None,
+            form: f.values(),
+            import: None,
+            import_error: None,
+            error,
+            other_lists,
+        });
+    }
     sqlx::query("UPDATE wishlists SET updated_at = datetime('now') WHERE id = ?")
         .bind(list_id)
         .execute(&state.db)
@@ -450,12 +466,33 @@ pub async fn copy_item(
 ) -> AppResult<Response> {
     let (item, list, _) = editable_item(&state, &ctx, id).await?;
     let (target, _, _) = editable_list(&state, &ctx, f.target_list).await?;
+    let full = || {
+        Ok(redirect_flash(
+            &format!("/lists/{}", list.id),
+            "error",
+            &db::list_full_message(&target.title),
+        ))
+    };
     if f.mode == "move" {
-        sqlx::query("UPDATE items SET wishlist_id = ? WHERE id = ?")
-            .bind(target.id)
-            .bind(id)
-            .execute(&state.db)
-            .await?;
+        if target.id == list.id {
+            return Ok(redirect_flash(
+                &format!("/lists/{}", list.id),
+                "ok",
+                "Already here.",
+            ));
+        }
+        let moved = sqlx::query(&format!(
+            "UPDATE items SET wishlist_id = ?1 WHERE id = ?2 AND {}",
+            db::list_has_room("?1")
+        ))
+        .bind(target.id)
+        .bind(id)
+        .execute(&state.db)
+        .await?
+        .rows_affected();
+        if moved == 0 {
+            return full();
+        }
         // Reservations were made against the old list's audience; clear them on move.
         sqlx::query("DELETE FROM claims WHERE item_id = ?")
             .bind(id)
@@ -467,14 +504,20 @@ pub async fn copy_item(
             &format!("Moved to “{}”.", target.title),
         ));
     }
-    sqlx::query(
+    let copied = sqlx::query(&format!(
         "INSERT INTO items (wishlist_id, title, url, image_url, image_blob_id, price_cents, currency, store, notes, priority, quantity, import_source)
-         SELECT ?, title, url, image_url, image_blob_id, price_cents, currency, store, notes, priority, quantity, import_source FROM items WHERE id = ?",
-    )
+         SELECT ?1, title, url, image_url, image_blob_id, price_cents, currency, store, notes, priority, quantity, import_source
+           FROM items WHERE id = ?2 AND {}",
+        db::list_has_room("?1")
+    ))
     .bind(target.id)
     .bind(item.id)
     .execute(&state.db)
-    .await?;
+    .await?
+    .rows_affected();
+    if copied == 0 {
+        return full();
+    }
     if item.image_url.is_some() && item.image_blob_id.is_none() {
         state.image_jobs.wake();
     }
@@ -519,11 +562,13 @@ async fn save_to_own_list(
             &format!("“{}” is already on “{}”.", item.title, target.title),
         ));
     }
-    sqlx::query(
+    let saved = sqlx::query(&format!(
         // The picture may have been purged since `item` was read; then the copy downloads it anew.
         "INSERT INTO items (wishlist_id, title, url, image_url, image_blob_id, price_cents, currency, store, import_source)
-         VALUES (?, ?, ?, ?, (SELECT blob_id FROM blob_variants WHERE blob_id = ? LIMIT 1), ?, ?, ?, ?)",
-    )
+         SELECT ?1, ?2, ?3, ?4, (SELECT blob_id FROM blob_variants WHERE blob_id = ?5 LIMIT 1), ?6, ?7, ?8, ?9
+          WHERE {}",
+        db::list_has_room("?1")
+    ))
     .bind(target.id)
     .bind(&item.title)
     .bind(&item.url)
@@ -534,7 +579,15 @@ async fn save_to_own_list(
     .bind(&item.store)
     .bind(&item.import_source)
     .execute(&state.db)
-    .await?;
+    .await?
+    .rows_affected();
+    if saved == 0 {
+        return Ok(redirect_flash(
+            back,
+            "error",
+            &db::list_full_message(&target.title),
+        ));
+    }
     sqlx::query("UPDATE wishlists SET updated_at = datetime('now') WHERE id = ?")
         .bind(target.id)
         .execute(&state.db)
@@ -1268,18 +1321,29 @@ pub async fn import_list(
         .iter()
         .map(|i| wish_key(i.url.as_deref(), &i.title))
         .collect();
-    let (mut added, mut duplicates) = (0, 0);
+    let mut duplicates = 0;
+    let mut new_items = Vec::new();
+    for item in &imported.items {
+        if seen.insert(wish_key(item.url.as_deref(), &item.title)) {
+            new_items.push(item);
+        } else {
+            duplicates += 1;
+        }
+    }
+    // If the list can't take them all, keep the ones at the top of the Amazon list.
+    let room =
+        (db::MAX_WISHES_PER_LIST - db::wish_count(&state.db, list_id).await?).max(0) as usize;
+    let left_out = new_items.len().saturating_sub(room);
+    new_items.truncate(room);
+    let mut added = 0;
     let mut tx = state.db.begin().await?;
     // Lists show newest first, so insert bottom-up to keep the order Amazon shows.
-    for item in imported.items.iter().rev() {
-        if !seen.insert(wish_key(item.url.as_deref(), &item.title)) {
-            duplicates += 1;
-            continue;
-        }
-        sqlx::query(
+    for item in new_items.into_iter().rev() {
+        added += sqlx::query(&format!(
             "INSERT INTO items (wishlist_id, title, url, image_url, price_cents, currency, store, notes, priority, quantity, import_source)
-             VALUES (?, ?, ?, ?, ?, ?, 'Amazon', ?, ?, ?, 'amazon-list')",
-        )
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, 'Amazon', ?7, ?8, ?9, 'amazon-list' WHERE {}",
+            db::list_has_room("?1")
+        ))
         .bind(list_id)
         .bind(&item.title)
         .bind(&item.url)
@@ -1290,8 +1354,8 @@ pub async fn import_list(
         .bind(item.priority)
         .bind(item.quantity)
         .execute(&mut *tx)
-        .await?;
-        added += 1;
+        .await?
+        .rows_affected();
     }
     sqlx::query("UPDATE wishlists SET updated_at = datetime('now') WHERE id = ?")
         .bind(list_id)
@@ -1316,6 +1380,12 @@ pub async fn import_list(
     };
     if duplicates > 0 {
         msg.push_str(&format!(" {duplicates} already on this list."));
+    }
+    if left_out > 0 {
+        msg.push_str(&format!(
+            " Left out {left_out}: a list can hold {} wishes.",
+            db::MAX_WISHES_PER_LIST
+        ));
     }
     if imported.already_bought > 0 {
         msg.push_str(&format!(

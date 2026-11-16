@@ -240,6 +240,28 @@ impl Item {
     }
 }
 
+/// Most wishes a list can hold (received ones included).
+pub const MAX_WISHES_PER_LIST: i64 = 200;
+/// Most lists one person can own (archived ones included; lists they co-manage don't count).
+pub const MAX_LISTS_PER_OWNER: i64 = 50;
+
+/// SQL that's true while list `{list}` has room for another wish. Inserts and moves include it
+/// in the statement itself, so two at once can't both squeeze past the limit.
+pub fn list_has_room(list: &str) -> String {
+    format!("(SELECT COUNT(*) FROM items WHERE wishlist_id = {list}) < {MAX_WISHES_PER_LIST}")
+}
+
+pub fn list_full_message(title: &str) -> String {
+    format!("“{title}” already has {MAX_WISHES_PER_LIST} wishes, the most a list can hold. Remove some to make room.")
+}
+
+pub async fn wish_count(db: &Db, list_id: i64) -> sqlx::Result<i64> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM items WHERE wishlist_id = ?")
+        .bind(list_id)
+        .fetch_one(db)
+        .await
+}
+
 pub fn priority_label(p: i64) -> &'static str {
     match p {
         1 => "Most wanted",

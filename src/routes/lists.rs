@@ -126,18 +126,48 @@ pub async fn create_list(
         }
     };
     let mut tx = state.db.begin().await?;
-    let id: i64 = sqlx::query_scalar(
+    // The limit is checked in the insert itself, so two at once can't both get past it.
+    let id: Option<i64> = sqlx::query_scalar(&format!(
         "INSERT INTO wishlists (owner_id, title, recipient_name, description, event_date, show_claims_to_owner)
-         VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
-    )
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6
+          WHERE (SELECT COUNT(*) FROM wishlists WHERE owner_id = ?1) < {}
+         RETURNING id",
+        db::MAX_LISTS_PER_OWNER
+    ))
     .bind(user.id)
     .bind(&clean.title)
     .bind(&clean.recipient_name)
     .bind(&clean.description)
     .bind(&clean.event_date)
     .bind(clean.show_claims_to_owner)
-    .fetch_one(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?;
+    let Some(id) = id else {
+        drop(tx);
+        let families = db::families_for_user(&state.db, user.id)
+            .await?
+            .into_iter()
+            .map(|fam| {
+                let on = f.families.contains(&fam.id);
+                (fam, on)
+            })
+            .collect();
+        return render(ListFormPage {
+            ctx,
+            list: None,
+            title: f.title.clone(),
+            recipient_name: f.recipient_name.clone().unwrap_or_default(),
+            description: f.description.clone().unwrap_or_default(),
+            event_date: f.event_date.clone().unwrap_or_default(),
+            show_claims_to_owner: f.show_claims_to_owner.is_some(),
+            can_set_claims: true,
+            families,
+            error: Some(format!(
+                "You already have {} lists, the most one person can have. Delete one you no longer need (archived lists count too).",
+                db::MAX_LISTS_PER_OWNER
+            )),
+        });
+    };
     for fam in &f.families {
         // Only families the creator belongs to.
         sqlx::query(

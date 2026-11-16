@@ -2104,3 +2104,148 @@ async fn a_shared_picture_never_follows_someone_elses_address() {
         .unwrap()
         .is_some());
 }
+
+/// Fill a list with filler wishes, straight in the database, until it holds `total`.
+async fn fill_list(state: &AppState, list_id: i64, total: i64) {
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+         INSERT INTO items (wishlist_id, title) SELECT ?1, 'Filler ' || i FROM n
+          WHERE i > (SELECT COUNT(*) FROM items WHERE wishlist_id = ?1)",
+    )
+    .bind(list_id)
+    .bind(total)
+    .execute(&state.db)
+    .await
+    .unwrap();
+}
+
+async fn wishes_on(state: &AppState, list_id: i64) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM items WHERE wishlist_id = ?")
+        .bind(list_id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_list_holds_at_most_200_wishes_however_they_arrive() {
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
+    let (_owner, mut mom, shared_list, shared_item) = family_with_item(&app).await;
+    let r = mom.post("/lists", &[("title", "Mom's wishes")]).await;
+    let full = id_from_location(r.location.as_deref().unwrap(), "/lists/");
+    let r = mom.post("/lists", &[("title", "Spare")]).await;
+    let spare = id_from_location(r.location.as_deref().unwrap(), "/lists/");
+    fill_list(&state, full, 199).await;
+
+    // The 200th wish fits; the 201st doesn't, and the form keeps what was typed.
+    let add = format!("/lists/{full}/items");
+    let r = mom.post(&add, &[("title", "Kite")]).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    let r = mom
+        .post(&add, &[("title", "Yo-yo"), ("notes", "red")])
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body.contains("already has 200 wishes"), "{}", r.body);
+    assert!(r.body.contains("Yo-yo") && r.body.contains("red"));
+    assert_eq!(wishes_on(&state, full).await, 200);
+
+    // Copying, moving and saving into a full list are refused too.
+    let r = mom
+        .post(&format!("/lists/{spare}/items"), &[("title", "Ball")])
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    let ball = item_ids(&mom.get(&format!("/lists/{spare}")).await.body)[0];
+    for mode in ["copy", "move"] {
+        mom.post(
+            &format!("/items/{ball}/copy"),
+            &[("target_list", &full.to_string()), ("mode", mode)],
+        )
+        .await;
+        let page = mom.get(&format!("/lists/{spare}")).await.body;
+        assert!(page.contains("already has 200 wishes"), "{mode}");
+    }
+    let r = mom
+        .post(
+            &format!("/items/{shared_item}/save"),
+            &[("target_list", &full.to_string())],
+        )
+        .await;
+    let page = mom.get(r.location.as_deref().unwrap()).await.body;
+    assert!(page.contains("already has 200 wishes"));
+    assert_eq!(wishes_on(&state, full).await, 200);
+    assert_eq!(wishes_on(&state, spare).await, 1, "the ball stayed put");
+    assert!(item_ids(&mom.get(&format!("/lists/{shared_list}")).await.body).contains(&shared_item));
+
+    // Removing one makes room again.
+    let first = item_ids(&mom.get(&format!("/lists/{full}")).await.body)[0];
+    mom.post(&format!("/items/{first}/delete"), &[]).await;
+    let r = mom.post(&add, &[("title", "Yo-yo")]).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    assert_eq!(wishes_on(&state, full).await, 200);
+}
+
+#[tokio::test]
+async fn an_amazon_import_stops_when_the_list_is_full() {
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
+    let amazon = fake_amazon().await;
+    let mut c = Client::new(&app);
+    c.signup("Sam", "sam@example.com").await;
+    let list = c.post("/lists", &[("title", "Wishes")]).await;
+    let list_id = id_from_location(&list.location.unwrap(), "/lists/");
+    fill_list(&state, list_id, 199).await;
+    let r = c
+        .post(
+            &format!("/lists/{list_id}/import"),
+            &[("url", &format!("{amazon}/hz/wishlist/ls/L1"))],
+        )
+        .await;
+    let page = c.get(r.location.as_deref().unwrap()).await.body;
+    assert!(page.contains("Added 1 wish from Amazon."), "{page}");
+    assert!(page.contains("Left out 1: a list can hold 200 wishes."));
+    // The one kept is the one at the top of the Amazon list.
+    assert!(page.contains("Kite") && !page.contains("Yo-yo"));
+    assert_eq!(wishes_on(&state, list_id).await, 200);
+}
+
+#[tokio::test]
+async fn one_person_can_own_at_most_50_lists() {
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
+    let mut c = Client::new(&app);
+    c.signup("Sam", "sam@example.com").await;
+    for n in 1..=49 {
+        let r = c.post("/lists", &[("title", &format!("List {n}"))]).await;
+        assert_eq!(r.status, StatusCode::SEE_OTHER);
+    }
+    // Archived lists count too.
+    let r = c.post("/lists", &[("title", "List 50")]).await;
+    let fiftieth = id_from_location(r.location.as_deref().unwrap(), "/lists/");
+    c.post(&format!("/lists/{fiftieth}/archive"), &[]).await;
+    let r = c.post("/lists", &[("title", "One too many")]).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body.contains("already have 50 lists"), "{}", r.body);
+    assert!(
+        r.body.contains("One too many"),
+        "the form keeps what was typed"
+    );
+    let owned: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM wishlists")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(owned, 50);
+
+    // Someone else isn't affected, and deleting one makes room.
+    let mut pat = Client::new(&app);
+    pat.signup("Pat", "pat@example.com").await;
+    assert_eq!(
+        pat.post("/lists", &[("title", "Pat's")]).await.status,
+        StatusCode::SEE_OTHER
+    );
+    c.post(&format!("/lists/{fiftieth}/delete"), &[]).await;
+    assert_eq!(
+        c.post("/lists", &[("title", "Room now")]).await.status,
+        StatusCode::SEE_OTHER
+    );
+}

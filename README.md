@@ -183,8 +183,10 @@ Back up `storage/` together with the database.
 - The importer and picture downloader ignore `HTTP(S)_PROXY`: a proxy would resolve addresses
   itself and get round the check that refuses private ones. A deployment that can only reach the
   internet through a proxy can't import from URLs.
-- There is no limit on how many wishes (and so pictures) an account can add. Each stored picture
-  costs well under 1 MB (its two sizes); if that matters for an open-signup server, add a quota.
+- A list holds at most 200 wishes and one person can own at most 50 lists (`MAX_WISHES_PER_LIST`
+  and `MAX_LISTS_PER_OWNER` in `src/db.rs`), so one account can keep at most 10,000 wishes. Each
+  stored picture costs well under 1 MB (its two sizes). Nothing limits how many accounts someone
+  can sign up for.
 - `/images/…` needs no sign-in: these are product photos, and public lists show them to anyone.
   Their addresses are content hashes, so someone who already has a picture's exact bytes could
   check whether it's stored here, but not which list or person it belongs to.
