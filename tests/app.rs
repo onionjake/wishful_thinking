@@ -1777,21 +1777,56 @@ async fn large_pictures_are_resized_and_cleaned_up_with_their_wish() {
             .is_some());
     }
 
-    // If every size is lost, pages fall back to the store's address and the picture is
-    // downloaded again like a new one.
+    // If every size goes missing, pages fall back to the store's address straight away. An
+    // empty store looks like a misconfiguration (a wrong path, a disk not mounted), so nothing
+    // is forgotten, and once the files are back, so is our copy.
+    let mut saved = Vec::new();
     for name in ["card", "thumb"] {
-        state
-            .storage
-            .delete(&format!("{key}-{name}"))
-            .await
-            .unwrap();
+        let file = format!("{key}-{name}");
+        saved.push((
+            file.clone(),
+            state.storage.get(&file).await.unwrap().unwrap(),
+        ));
+        state.storage.delete(&file).await.unwrap();
     }
     assert_eq!(get(card.clone()).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        get(format!("/images/{key}/thumb")).await.0,
+        StatusCode::NOT_FOUND
+    );
     let fallback = c.get(&format!("/lists/{list_id}")).await.body;
     assert!(
         fallback.contains(&format!("src=\"{poster}\"")),
         "falls back"
     );
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        wishful_thinking::images::purge_unused(&state)
+            .await
+            .unwrap(),
+        0
+    );
+    for (file, bytes) in &saved {
+        state.storage.put(file, bytes.to_vec()).await.unwrap();
+    }
+    wishful_thinking::images::store_pending(&state)
+        .await
+        .unwrap();
+    let back = c.get(&format!("/lists/{list_id}")).await.body;
+    assert_eq!(stored_image_path(&back).as_deref(), Some(card.as_str()));
+
+    // If the files really are lost, `reset-pictures` makes everything download again.
+    for (file, _) in &saved {
+        state.storage.delete(file).await.unwrap();
+    }
+    wishful_thinking::images::reset_all(&state.db)
+        .await
+        .unwrap();
     assert_eq!(
         wishful_thinking::images::store_pending(&state)
             .await

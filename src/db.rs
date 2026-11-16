@@ -124,6 +124,7 @@ const SUMMARY_SELECT: &str = "SELECT w.id, w.title, w.recipient_name, w.event_da
     w.archived,
     (SELECT group_concat(COALESCE('/images/' || b.key || '/card', i.image_url), char(10))
        FROM items i LEFT JOIN blobs b ON b.id = i.image_blob_id
+         AND EXISTS (SELECT 1 FROM blob_variants v WHERE v.blob_id = b.id AND v.missing_at IS NULL)
       WHERE i.wishlist_id = w.id AND i.image_url IS NOT NULL AND i.received = 0) AS images
   FROM wishlists w JOIN users u ON u.id = w.owner_id";
 
@@ -251,7 +252,8 @@ pub const ITEM_SELECT: &str =
     "SELECT i.id, i.wishlist_id, i.title, i.url, i.image_url, i.image_blob_id, b.key AS image_key,
     i.price_cents, i.currency, i.store, i.notes, i.priority, i.quantity, i.received, i.import_source,
     COALESCE((SELECT SUM(c.quantity) FROM claims c WHERE c.item_id = i.id), 0) AS claimed_qty
-  FROM items i LEFT JOIN blobs b ON b.id = i.image_blob_id";
+  FROM items i LEFT JOIN blobs b ON b.id = i.image_blob_id
+         AND EXISTS (SELECT 1 FROM blob_variants v WHERE v.blob_id = b.id AND v.missing_at IS NULL)";
 
 pub async fn items_for_list(db: &Db, list_id: i64) -> sqlx::Result<Vec<Item>> {
     sqlx::query_as::<_, Item>(&format!(

@@ -60,6 +60,11 @@ pub fn spawn_worker(state: AppState) {
         // Look for stray files at startup and then at most hourly, however often we're woken.
         let mut last_sweep: Option<Instant> = None;
         loop {
+            match confirm_missing(&state).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(forgotten = n, "picture sizes confirmed missing"),
+                Err(e) => tracing::warn!(error = %e, "checking missing pictures failed"),
+            }
             // Purge first: it's quick, and shouldn't wait behind a long download queue.
             match purge_unused(&state).await {
                 Ok(0) => {}
@@ -111,15 +116,70 @@ pub async fn purge_unused(state: &AppState) -> anyhow::Result<usize> {
     .await
 }
 
-/// A stored size's file is gone (storage restored without it, or deleted by hand). Forget that
-/// size so the worker downloads the picture again and remakes it. Nothing is detached or
-/// deleted meanwhile: the picture's other sizes keep working, and if the download never
-/// succeeds (the store's link has died) they're all that's left, so they must stay.
-pub async fn forget_missing(
-    state: &AppState,
-    blob_id: i64,
-    variant: Variant,
-) -> anyhow::Result<()> {
+/// Check the sizes that page requests found missing (`missing_at`). Page requests only flag
+/// them, since anyone can make one; the worker decides. If the store looks empty, it's far more
+/// likely misconfigured (a wrong path, a disk not mounted) than emptied, so nothing is touched:
+/// pages keep falling back to the original addresses until it's fixed, when the flags clear.
+/// Otherwise a size whose file is really gone is forgotten (see [`forget_missing`]).
+pub async fn confirm_missing(state: &AppState) -> anyhow::Result<usize> {
+    let flagged: Vec<(i64, String, String)> =
+        sqlx::query_as("SELECT blob_id, name, key FROM blob_variants WHERE missing_at IS NOT NULL")
+            .fetch_all(&state.db)
+            .await?;
+    if flagged.is_empty() {
+        return Ok(0);
+    }
+    if state.storage.is_empty().await? {
+        tracing::error!(
+            storage = ?state.storage,
+            "the picture store is empty but the database lists stored pictures: check \
+             WT_STORAGE_URL (or where the database is). Pictures show their original addresses \
+             meanwhile. If the files really are lost, run `wishful_thinking reset-pictures`."
+        );
+        return Ok(0);
+    }
+    let mut forgotten = 0;
+    for (blob_id, name, key) in flagged {
+        if state.storage.exists(&key).await? {
+            sqlx::query(
+                "UPDATE blob_variants SET missing_at = NULL WHERE blob_id = ? AND name = ?",
+            )
+            .bind(blob_id)
+            .bind(&name)
+            .execute(&state.db)
+            .await?;
+        } else if let Some(variant) = Variant::from_name(&name) {
+            forget_missing(state, blob_id, variant).await?;
+            forgotten += 1;
+        }
+    }
+    Ok(forgotten)
+}
+
+/// Forget every stored picture, so each wish shows its original address and downloads it again.
+/// For when the store's files are really lost (`wishful_thinking reset-pictures`).
+pub async fn reset_all(db: &crate::db::Db) -> anyhow::Result<u64> {
+    let mut tx = db.begin().await?;
+    let mut detached = 0;
+    for table in TABLES {
+        detached += sqlx::query(&format!(
+            "UPDATE {table} SET image_blob_id = NULL, image_attempts = 0, image_attempted_at = NULL
+              WHERE image_blob_id IS NOT NULL"
+        ))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    }
+    sqlx::query("DELETE FROM blobs").execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(detached)
+}
+
+/// A stored size's file is confirmed gone. Forget that size so the worker downloads the picture
+/// again and remakes it. The picture's other sizes keep working meanwhile, and if the download
+/// never succeeds (the store's link has died) they're all that's left, so they must stay. Only
+/// the worker calls this.
+async fn forget_missing(state: &AppState, blob_id: i64, variant: Variant) -> anyhow::Result<()> {
     tracing::warn!(
         blob_id,
         size = variant.name(),
@@ -130,9 +190,8 @@ pub async fn forget_missing(
         .bind(variant.name())
         .execute(&state.db)
         .await?;
-    // With no size left there's nothing to show: detach the picture so pages fall back to the
-    // original address and the worker downloads whatever it serves now, like a new wish. (Only
-    // rows change here; the empty blob is the worker's to purge.)
+    // With no size left there's nothing to show: detach the picture so the worker downloads
+    // whatever its address serves now, like a new wish (the purge then removes the empty blob).
     let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blob_variants WHERE blob_id = ?")
         .bind(blob_id)
         .fetch_one(&state.db)
@@ -158,7 +217,6 @@ pub async fn forget_missing(
     .bind(blob_id)
     .execute(&state.db)
     .await?;
-    // No wake: anyone can request a picture, and the hourly pass is soon enough.
     Ok(())
 }
 
@@ -172,9 +230,11 @@ fn due(p: &str) -> String {
     )
 }
 
-/// Download every picture that is due, returning how many were stored. Tests call this directly
+/// Check flagged sizes, then download every picture that is due, returning how many were
+/// stored: one full pass of the worker's work apart from purging. Tests call this directly
 /// instead of running the worker.
 pub async fn store_pending(state: &AppState) -> anyhow::Result<usize> {
+    confirm_missing(state).await?;
     let mut total = 0;
     loop {
         let (stored, more) = store_due(state, None).await?;
@@ -344,7 +404,8 @@ async fn store_one(state: &AppState, table: &str, id: i64, url: &str) -> bool {
             "SELECT id FROM blobs b
               WHERE (id IN (SELECT image_blob_id FROM items WHERE image_url = ?1)
                      OR id IN (SELECT image_blob_id FROM gift_history WHERE image_url = ?1))
-                AND EXISTS (SELECT 1 FROM blob_variants v WHERE v.blob_id = b.id)
+                AND EXISTS (SELECT 1 FROM blob_variants v
+                             WHERE v.blob_id = b.id AND v.missing_at IS NULL)
               LIMIT 1",
         )
         .bind(url)
@@ -356,7 +417,7 @@ async fn store_one(state: &AppState, table: &str, id: i64, url: &str) -> bool {
         };
         let attached = sqlx::query(&format!(
             "UPDATE {table} SET image_blob_id = ?1 WHERE id = ?2 AND image_url = ?3
-                AND EXISTS (SELECT 1 FROM blobs WHERE id = ?1)"
+                AND EXISTS (SELECT 1 FROM blob_variants WHERE blob_id = ?1)"
         ))
         .bind(blob_id)
         .bind(id)
@@ -606,7 +667,8 @@ async fn save_variants(
 }
 
 /// A stored picture at the requested size, as a stream of its bytes, its content type and
-/// whether it really is that size (rather than a stand-in), or `None` if there's no such picture. Page requests never decode anything: if this size's file
+/// whether it really is that size (rather than a stand-in), or `None` if there's no such picture
+/// or no stored size of it can be read. Page requests never decode anything: if this size's file
 /// is missing, it's left for the worker to remake and another stored size is served meanwhile
 /// (the page scales it to fit).
 pub async fn variant(
@@ -614,12 +676,12 @@ pub async fn variant(
     blob_key: &str,
     variant: Variant,
 ) -> anyhow::Result<Option<(storage::ByteStream, String, bool)>> {
-    // This size first, then the others.
+    // This size first, then the others; sizes already found missing last.
     let sizes: Vec<(i64, String, String, String)> = sqlx::query_as(
         "SELECT b.id, v.name, v.key, v.content_type FROM blobs b
            JOIN blob_variants v ON v.blob_id = b.id
           WHERE b.key = ?
-          ORDER BY v.name = ? DESC",
+          ORDER BY v.missing_at IS NOT NULL, v.name = ? DESC",
     )
     .bind(blob_key)
     .bind(variant.name())
@@ -629,9 +691,16 @@ pub async fn variant(
         if let Some(stream) = state.storage.get_stream(&key).await? {
             return Ok(Some((stream, content_type, name == variant.name())));
         }
-        if let Some(lost) = Variant::from_name(&name) {
-            forget_missing(state, blob_id, lost).await?;
-        }
+        // Only flag it: the worker checks before anything is forgotten (see `confirm_missing`).
+        // Pages stop using a picture once all its sizes are flagged.
+        sqlx::query(
+            "UPDATE blob_variants SET missing_at = datetime('now')
+              WHERE blob_id = ? AND name = ? AND missing_at IS NULL",
+        )
+        .bind(blob_id)
+        .bind(&name)
+        .execute(&state.db)
+        .await?;
     }
     Ok(None)
 }

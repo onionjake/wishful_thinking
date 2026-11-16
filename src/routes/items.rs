@@ -522,7 +522,7 @@ async fn save_to_own_list(
     sqlx::query(
         // The picture may have been purged since `item` was read; then the copy downloads it anew.
         "INSERT INTO items (wishlist_id, title, url, image_url, image_blob_id, price_cents, currency, store, import_source)
-         VALUES (?, ?, ?, ?, (SELECT id FROM blobs WHERE id = ?), ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, (SELECT blob_id FROM blob_variants WHERE blob_id = ? LIMIT 1), ?, ?, ?, ?)",
     )
     .bind(target.id)
     .bind(&item.title)
@@ -1133,6 +1133,7 @@ pub async fn history(
         "SELECT g.id, g.title, g.url, g.image_url, b.key AS image_key, g.price_cents, g.currency, g.quantity,
                 g.recipient, g.occasion, g.purchased_at
            FROM gift_history g LEFT JOIN blobs b ON b.id = g.image_blob_id
+         AND EXISTS (SELECT 1 FROM blob_variants v WHERE v.blob_id = b.id AND v.missing_at IS NULL)
           WHERE g.buyer_id = ? ORDER BY g.recipient COLLATE NOCASE, g.purchased_at DESC, g.id DESC",
     )
     .bind(user.id)

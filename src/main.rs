@@ -4,7 +4,7 @@ use sqlx::sqlite::SqliteConnectOptions;
 use tracing_subscriber::EnvFilter;
 use wishful_thinking::{app, auth, db, images, AppState, Config};
 
-const USAGE: &str = "usage: wishful_thinking [reset-password EMAIL]";
+const USAGE: &str = "usage: wishful_thinking [reset-password EMAIL | reset-pictures]";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -17,6 +17,7 @@ async fn main() -> anyhow::Result<()> {
     {
         [] => {}
         ["reset-password", email] => return reset_password(email).await,
+        ["reset-pictures"] => return reset_pictures().await,
         _ => {
             eprintln!("{USAGE}");
             std::process::exit(2);
@@ -72,6 +73,25 @@ async fn main() -> anyhow::Result<()> {
 /// `wishful_thinking reset-password EMAIL`: print a new password for the account and sign it
 /// out everywhere. The app sends no email, so this is how someone who forgot their password gets back in.
 async fn reset_password(email: &str) -> anyhow::Result<()> {
+    let db = existing_db().await?;
+    match auth::reset_password(&db, email).await? {
+        Some(password) => println!("New password for {email}: {password}"),
+        None => anyhow::bail!("no account with email {email}"),
+    }
+    Ok(())
+}
+
+/// `wishful_thinking reset-pictures`: forget every stored picture so each wish shows its original
+/// address and downloads it again. For when the picture store's files really are lost; the
+/// server won't conclude that by itself, since an empty store usually means a wrong path.
+async fn reset_pictures() -> anyhow::Result<()> {
+    let db = existing_db().await?;
+    let detached = images::reset_all(&db).await?;
+    println!("Forgot the stored pictures of {detached} wishes and gifts; the server will download them again.");
+    Ok(())
+}
+
+async fn existing_db() -> anyhow::Result<db::Db> {
     let config = Config::from_env()?;
     // Pointed at the wrong place, connecting would create an empty database instead.
     let opts = SqliteConnectOptions::from_str(&config.database_url)?;
@@ -81,10 +101,5 @@ async fn reset_password(email: &str) -> anyhow::Result<()> {
         "no database at {} (set WT_DATABASE_URL)",
         path.display()
     );
-    let db = db::connect(&config.database_url).await?;
-    match auth::reset_password(&db, email).await? {
-        Some(password) => println!("New password for {email}: {password}"),
-        None => anyhow::bail!("no account with email {email}"),
-    }
-    Ok(())
+    db::connect(&config.database_url).await
 }

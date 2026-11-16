@@ -141,13 +141,18 @@ store. It works much like Rails' ActiveStorage:
   no wish or gift history uses any more, with all their sizes. It also checks hourly, and hourly
   sweeps away stray files with no blob behind them (from a crash or a failed delete). Gift
   history keeps its picture after the wish is gone.
-- If a stored size's file goes missing (say, the database was restored without `storage/`),
-  another stored size of the picture is served in its place, and the worker downloads the
-  picture again from the wishes' own addresses to remake it, but only if an address still serves
-  the very same picture. Nothing ever moves to a different picture (a dead product link often
-  serves a placeholder), so the sizes that survived keep being served. If no size survives, the
-  wishes fall back to the original address and the picture is downloaded again like a new one.
-  Page requests never decode anything and never redirect elsewhere.
+- If a stored size's file goes missing (say, the database was restored without `storage/`), a
+  page request only flags it, and serves another stored size in its place; a picture with every
+  size flagged falls back to its original address. The worker then checks. **If the whole store
+  is empty, it assumes a misconfiguration** (a wrong `WT_STORAGE_URL`, a disk not mounted),
+  changes nothing and logs an error; the pictures come back as soon as the files do. Otherwise it
+  downloads the picture again from the wishes' own addresses to remake the size, but only if an
+  address still serves the very same picture. Nothing ever moves to a different picture (a dead
+  product link often serves a placeholder), so the sizes that survived keep being served. If no
+  size survives, the wishes download their original address again like new ones. Page requests
+  never decode anything, never redirect elsewhere, and can't make the app forget a picture.
+- If the files really are lost, `wishful_thinking reset-pictures` (with the server's
+  `WT_DATABASE_URL`) forgets every stored picture, and the worker downloads them all again.
 - Pictures existing before this feature are picked up by the same worker on startup.
 
 To add a size, add a `Variant` in `src/images.rs`. The worker downloads stored pictures again to

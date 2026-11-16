@@ -6,6 +6,10 @@ CREATE TABLE blob_variants (
     key          TEXT    NOT NULL,
     content_type TEXT    NOT NULL,
     byte_size    INTEGER NOT NULL,
+    -- When a page request found this size's file missing. The worker checks before acting, so
+    -- a misconfigured store can't make the app forget pictures; pages skip a picture whose
+    -- sizes are all flagged.
+    missing_at   TEXT,
     created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (blob_id, name)
 );

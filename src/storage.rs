@@ -96,6 +96,25 @@ impl Storage {
         }
     }
 
+    pub async fn exists(&self, key: &str) -> object_store::Result<bool> {
+        match self.store.head(&self.path(key)).await {
+            Ok(_) => Ok(true),
+            Err(object_store::Error::NotFound { .. }) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Whether the store holds no files at all.
+    pub async fn is_empty(&self) -> object_store::Result<bool> {
+        use futures_util::TryStreamExt;
+        Ok(self
+            .store
+            .list(Some(&self.prefix))
+            .try_next()
+            .await?
+            .is_none())
+    }
+
     pub async fn delete(&self, key: &str) -> object_store::Result<()> {
         match self.store.delete(&self.path(key)).await {
             Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
