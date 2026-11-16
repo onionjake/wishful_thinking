@@ -565,7 +565,9 @@ pub async fn variant(
     blob_key: &str,
     variant: Variant,
 ) -> anyhow::Result<Option<Served>> {
-    let found: Option<(i64, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+    /// A blob, its source address, and the requested size's file and type if it has one.
+    type Found = (i64, Option<String>, Option<String>, Option<String>);
+    let found: Option<Found> = sqlx::query_as(
         "SELECT b.id, b.source_url, v.key, v.content_type FROM blobs b
            LEFT JOIN blob_variants v ON v.blob_id = b.id AND v.name = ?
           WHERE b.key = ?",
