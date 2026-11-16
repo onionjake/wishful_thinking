@@ -1481,3 +1481,820 @@ async fn bookmarklet_imports_from_the_page_in_the_browser() {
 fn urlencode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
+
+/// A small real PNG: a flat colour, which PNG stores far smaller than any re-encoding, so the
+/// app serves it as is.
+fn small_png() -> Vec<u8> {
+    let img = image::RgbImage::from_pixel(40, 30, image::Rgb([200, 120, 40]));
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+static SAME_B_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+async fn fake_image_host() -> String {
+    let app = Router::new()
+        .route(
+            "/lamp.png",
+            axum::routing::get(|| async { ([(header::CONTENT_TYPE, "image/png")], small_png()) }),
+        )
+        .route(
+            "/big.png",
+            axum::routing::get(|| async {
+                let img = image::RgbImage::from_fn(1200, 600, |x, y| {
+                    image::Rgb([(x % 256) as u8, (y % 256) as u8, ((x ^ y) % 256) as u8])
+                });
+                let mut out = std::io::Cursor::new(Vec::new());
+                img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+                ([(header::CONTENT_TYPE, "image/png")], out.into_inner())
+            }),
+        )
+        .route(
+            // Two addresses serving the same picture, until the second changes.
+            "/same-{which}",
+            axum::routing::get(
+                |axum::extract::Path(which): axum::extract::Path<String>| async move {
+                    let changed = which == "b.png"
+                        && SAME_B_CHANGED.load(std::sync::atomic::Ordering::SeqCst);
+                    let img = image::RgbImage::from_fn(700, 700, |x, y| {
+                        let v = if changed {
+                            255 - (x % 256) as u8
+                        } else {
+                            (x % 256) as u8
+                        };
+                        image::Rgb([v, (y % 256) as u8, 77])
+                    });
+                    let mut out = std::io::Cursor::new(Vec::new());
+                    img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+                    ([(header::CONTENT_TYPE, "image/png")], out.into_inner())
+                },
+            ),
+        )
+        .route(
+            // A picture that is only there once: its link dies after the first download.
+            "/once.png",
+            axum::routing::get(|| async {
+                static SERVED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if SERVED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    return axum::response::IntoResponse::into_response(StatusCode::NOT_FOUND);
+                }
+                let img = image::RgbImage::from_fn(900, 900, |x, y| {
+                    image::Rgb([(x % 256) as u8, (y % 200) as u8, ((x + y) % 256) as u8])
+                });
+                let mut out = std::io::Cursor::new(Vec::new());
+                img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+                axum::response::IntoResponse::into_response((
+                    [(header::CONTENT_TYPE, "image/png")],
+                    out.into_inner(),
+                ))
+            }),
+        )
+        .route(
+            // A server that lies about the type: it's HTML, which must not be kept.
+            "/fake.png",
+            axum::routing::get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "image/png")],
+                    "<script>alert(1)</script>",
+                )
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+/// The `/images/<key>` address on a page, if any.
+fn stored_image_path(page: &str) -> Option<String> {
+    let at = page.find("src=\"/images/")? + 5;
+    Some(page[at..].split('"').next().unwrap().to_string())
+}
+
+#[tokio::test]
+async fn pictures_are_downloaded_and_served_locally() {
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
+    let host = fake_image_host().await;
+    let mut c = Client::new(&app);
+    c.signup("Sam", "sam@example.com").await;
+    let list = c.post("/lists", &[("title", "Wishes")]).await;
+    let list_id = id_from_location(&list.location.unwrap(), "/lists/");
+    let lamp = format!("{host}/lamp.png");
+    let r = c
+        .post(
+            &format!("/lists/{list_id}/items"),
+            &[("title", "Lamp"), ("image_url", &lamp)],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.body);
+
+    // Until the download runs, the page shows the store's address.
+    let page = c.get(&format!("/lists/{list_id}")).await.body;
+    assert!(page.contains(&format!("src=\"{lamp}\"")));
+    assert!(stored_image_path(&page).is_none());
+
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        1
+    );
+    let page = c.get(&format!("/lists/{list_id}")).await.body;
+    let src = stored_image_path(&page).expect("stored picture on the list page");
+    assert!(!page.contains(&format!("src=\"{lamp}\"")));
+    let home = c.get("/").await.body;
+    assert!(home.contains(&src), "list previews use the stored copy");
+
+    let resp = app
+        .clone()
+        .oneshot(Request::get(&src).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()[header::CONTENT_TYPE], "image/png");
+    assert!(resp.headers()[header::CACHE_CONTROL]
+        .to_str()
+        .unwrap()
+        .contains("immutable"));
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.as_ref(), small_png());
+    for bad in [
+        "/images/../../etc/passwd",
+        &format!("/images/{}", "0".repeat(64)),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(Request::get(bad).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{bad}");
+    }
+
+    // Nothing left to do: a second pass downloads nothing.
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        0
+    );
+
+    // A copy shares the stored picture without downloading it again.
+    let other = c.post("/lists", &[("title", "Other")]).await;
+    let other_id = id_from_location(&other.location.unwrap(), "/lists/");
+    let item_id = item_ids(&page)[0];
+    c.post(
+        &format!("/items/{item_id}/copy"),
+        &[("target_list", &other_id.to_string()), ("mode", "copy")],
+    )
+    .await;
+    let copied = c.get(&format!("/lists/{other_id}")).await.body;
+    assert_eq!(stored_image_path(&copied).as_deref(), Some(src.as_str()));
+
+    // Changing the picture to something that isn't an image drops the stored copy and falls
+    // back to the address; the bogus file is never kept.
+    let fake = format!("{host}/fake.png");
+    c.post(
+        &format!("/items/{item_id}/edit"),
+        &[("title", "Lamp"), ("image_url", &fake)],
+    )
+    .await;
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        0
+    );
+    let page = c.get(&format!("/lists/{list_id}")).await.body;
+    assert!(page.contains(&format!("src=\"{fake}\"")));
+    assert!(stored_image_path(&page).is_none());
+    let blobs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blobs")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(blobs, 1);
+    // It isn't retried straight away.
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        0
+    );
+    let attempts: i64 = sqlx::query_scalar("SELECT image_attempts FROM items WHERE id = ?")
+        .bind(item_id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(attempts, 1);
+
+    // `retry-pictures` gives it fresh attempts, leaving stored pictures alone.
+    assert_eq!(
+        wishful_thinking::images::retry_all(&state.db)
+            .await
+            .unwrap(),
+        1
+    );
+    let stored_before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM items WHERE image_blob_id IS NOT NULL")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(stored_before, 1, "the copy keeps its stored picture");
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        0
+    );
+    let attempts: i64 = sqlx::query_scalar("SELECT image_attempts FROM items WHERE id = ?")
+        .bind(item_id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(attempts, 1, "tried again");
+
+    // Once no wish uses a picture any more, the purge deletes it.
+    let copy_id = item_ids(&copied)[0];
+    c.post(&format!("/items/{copy_id}/delete"), &[]).await;
+    let purge = || wishful_thinking::images::purge_unused(&state);
+    assert_eq!(purge().await.unwrap(), 1);
+    let resp = app
+        .clone()
+        .oneshot(Request::get(&src).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let key = src.trim_start_matches("/images/").trim_end_matches("/card");
+    assert!(state
+        .storage
+        .get(&format!("{key}-card"))
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn large_pictures_are_resized_and_cleaned_up_with_their_wish() {
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
+    let host = fake_image_host().await;
+    let mut c = Client::new(&app);
+    c.signup("Sam", "sam@example.com").await;
+    let list = c.post("/lists", &[("title", "Wishes")]).await;
+    let list_id = id_from_location(&list.location.unwrap(), "/lists/");
+    let poster = format!("{host}/big.png");
+    c.post(
+        &format!("/lists/{list_id}/items"),
+        &[("title", "Poster"), ("image_url", &poster)],
+    )
+    .await;
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        1
+    );
+    let page = c.get(&format!("/lists/{list_id}")).await.body;
+    let card = stored_image_path(&page).unwrap();
+    assert!(card.ends_with("/card"), "{card}");
+    let key = card.split('/').nth(2).unwrap().to_string();
+
+    let get = |path: String| {
+        let app = app.clone();
+        async move {
+            let resp = app
+                .oneshot(Request::get(&path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = resp.status();
+            let ct = resp
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .map(|v| v.to_str().unwrap().to_string());
+            let body = resp.into_body().collect().await.unwrap().to_bytes();
+            (status, ct, body)
+        }
+    };
+    let (status, ct, body) = get(card.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ct.as_deref(), Some("image/jpeg"));
+    let img = image::load_from_memory(&body).unwrap();
+    assert_eq!((img.width(), img.height()), (480, 240));
+    let (_, _, again) = get(card.clone()).await;
+    assert_eq!(again, body, "made once, then served from storage");
+    let (_, _, thumb) = get(format!("/images/{key}/thumb")).await;
+    let img = image::load_from_memory(&thumb).unwrap();
+    assert_eq!((img.width(), img.height()), (160, 80));
+    // The full original isn't kept or served.
+    assert_eq!(get(format!("/images/{key}")).await.0, StatusCode::NOT_FOUND);
+    assert!(state.storage.get(&key).await.unwrap().is_none());
+    assert_eq!(
+        get(format!("/images/{key}/huge")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    for name in ["card", "thumb"] {
+        assert!(state
+            .storage
+            .get(&format!("{key}-{name}"))
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    // Pointed at the wrong store (a typo, a disk not mounted), pages fall back to the store's
+    // address and nothing is stored, forgotten or deleted; once it's fixed, our copy is back.
+    let wrong = AppState {
+        storage: wishful_thinking::storage::Storage::open("memory:///").unwrap(),
+        ..state.clone()
+    };
+    let wrong_app = wishful_thinking::app(wrong.clone());
+    let fetch = |app: Router, path: String| async move {
+        app.oneshot(Request::get(&path).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    };
+    assert_eq!(
+        fetch(wrong_app.clone(), card.clone()).await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fetch(wrong_app.clone(), format!("/images/{key}/thumb")).await,
+        StatusCode::NOT_FOUND
+    );
+    let fallback = c.get(&format!("/lists/{list_id}")).await.body;
+    assert!(
+        fallback.contains(&format!("src=\"{poster}\"")),
+        "falls back"
+    );
+    assert!(
+        !wishful_thinking::storage::check_identity(&wrong.db, &wrong.storage)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        wishful_thinking::images::store_pending(&wrong)
+            .await
+            .unwrap(),
+        0
+    );
+    wishful_thinking::images::store_pending(&state)
+        .await
+        .unwrap();
+    let back = c.get(&format!("/lists/{list_id}")).await.body;
+    assert_eq!(stored_image_path(&back).as_deref(), Some(card.as_str()));
+
+    // A new database pointed at this store doesn't recognise it either, so it won't sweep away
+    // files it knows nothing about.
+    let other = AppState::new(Config::for_tests()).await.unwrap();
+    assert!(
+        !wishful_thinking::storage::check_identity(&other.db, &state.storage)
+            .await
+            .unwrap()
+    );
+
+    // If the files really are lost from the right store, the picture is downloaded again.
+    for name in ["card", "thumb"] {
+        state
+            .storage
+            .delete(&format!("{key}-{name}"))
+            .await
+            .unwrap();
+    }
+    assert_eq!(get(card.clone()).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        get(format!("/images/{key}/thumb")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(get(card.clone()).await.0, StatusCode::OK);
+
+    // And if the whole store is replaced, `reset-pictures` pairs the new one and everything is
+    // downloaded into it.
+    let replaced = AppState {
+        storage: wishful_thinking::storage::Storage::open("memory:///").unwrap(),
+        ..state.clone()
+    };
+    wishful_thinking::images::reset_all(&replaced.db, &replaced.storage)
+        .await
+        .unwrap();
+    assert_eq!(
+        wishful_thinking::images::store_pending(&replaced)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        fetch(wishful_thinking::app(replaced.clone()), card.clone()).await,
+        StatusCode::OK
+    );
+    // (Back to the original store, the same way.)
+    wishful_thinking::images::reset_all(&state.db, &state.storage)
+        .await
+        .unwrap();
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        1
+    );
+
+    // A stray file with no blob behind it is swept away; stored pictures are left alone.
+    let stray = "ab".repeat(32);
+    state.storage.put(&stray, b"junk".to_vec()).await.unwrap();
+    let sweep =
+        |min_age| wishful_thinking::storage::sweep_orphans(&state.db, &state.storage, min_age);
+    assert_eq!(
+        sweep(std::time::Duration::from_secs(3600)).await.unwrap(),
+        0,
+        "too new"
+    );
+    assert_eq!(sweep(std::time::Duration::ZERO).await.unwrap(), 1);
+    assert!(state.storage.get(&stray).await.unwrap().is_none());
+    assert!(state
+        .storage
+        .get(&format!("{key}-card"))
+        .await
+        .unwrap()
+        .is_some());
+
+    // If a stored size goes missing, the other size is served in its place while the worker
+    // downloads the picture again. Page requests never decode anything themselves.
+    let item_id = item_ids(&page)[0];
+    state.storage.delete(&format!("{key}-card")).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(Request::get(&card).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "served from the other size meanwhile"
+    );
+    let stand_in = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(image::load_from_memory(&stand_in).unwrap().width(), 160);
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        1
+    );
+    let page = c.get(&format!("/lists/{list_id}")).await.body;
+    assert_eq!(stored_image_path(&page).as_deref(), Some(card.as_str()));
+    let (status, _, remade) = get(card.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(image::load_from_memory(&remade).unwrap().width(), 480);
+
+    // Deleting the wish deletes the picture and every size of it.
+    c.post(&format!("/items/{item_id}/delete"), &[]).await;
+    assert_eq!(
+        wishful_thinking::images::purge_unused(&state)
+            .await
+            .unwrap(),
+        1
+    );
+    for stored in [key.clone(), format!("{key}-card"), format!("{key}-thumb")] {
+        assert!(
+            state.storage.get(&stored).await.unwrap().is_none(),
+            "{stored}"
+        );
+    }
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blob_variants")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+    assert_eq!(get(card).await.0, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn losing_one_size_never_costs_the_others_when_the_link_has_died() {
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
+    let host = fake_image_host().await;
+    let mut c = Client::new(&app);
+    c.signup("Sam", "sam@example.com").await;
+    let list = c.post("/lists", &[("title", "Wishes")]).await;
+    let list_id = id_from_location(&list.location.unwrap(), "/lists/");
+    let once = format!("{host}/once.png");
+    c.post(
+        &format!("/lists/{list_id}/items"),
+        &[("title", "Rare"), ("image_url", &once)],
+    )
+    .await;
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        1
+    );
+    let card = stored_image_path(&c.get(&format!("/lists/{list_id}")).await.body).unwrap();
+    let key = card.split('/').nth(2).unwrap().to_string();
+
+    // The thumbnail is lost, and the store's link no longer works.
+    state.storage.delete(&format!("{key}-thumb")).await.unwrap();
+    let status = |path: String| {
+        let app = app.clone();
+        async move {
+            app.oneshot(Request::get(&path).body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+    assert_eq!(status(format!("/images/{key}/thumb")).await, StatusCode::OK);
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        wishful_thinking::images::purge_unused(&state)
+            .await
+            .unwrap(),
+        0
+    );
+
+    // The card is untouched and still served; the wish still uses our copy.
+    assert_eq!(status(card.clone()).await, StatusCode::OK);
+    let page = c.get(&format!("/lists/{list_id}")).await.body;
+    assert_eq!(stored_image_path(&page).as_deref(), Some(card.as_str()));
+}
+
+#[tokio::test]
+async fn a_shared_picture_never_follows_someone_elses_address() {
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
+    let host = fake_image_host().await;
+    // Pat adds a picture first; Sam adds the same picture from another address.
+    let mut pat = Client::new(&app);
+    pat.signup("Pat", "pat@example.com").await;
+    let pats = pat.post("/lists", &[("title", "Pat's")]).await;
+    let pats = id_from_location(&pats.location.unwrap(), "/lists/");
+    let b = format!("{host}/same-b.png");
+    pat.post(
+        &format!("/lists/{pats}/items"),
+        &[("title", "Mug"), ("image_url", &b)],
+    )
+    .await;
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        1
+    );
+    let mut sam = Client::new(&app);
+    sam.signup("Sam", "sam@example.com").await;
+    let sams = sam.post("/lists", &[("title", "Sam's")]).await;
+    let sams = id_from_location(&sams.location.unwrap(), "/lists/");
+    let a = format!("{host}/same-a.png");
+    sam.post(
+        &format!("/lists/{sams}/items"),
+        &[("title", "Mug"), ("image_url", &a)],
+    )
+    .await;
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        1
+    );
+    let pats_card = stored_image_path(&pat.get(&format!("/lists/{pats}")).await.body).unwrap();
+    let sams_card = stored_image_path(&sam.get(&format!("/lists/{sams}")).await.body).unwrap();
+    assert_eq!(pats_card, sams_card, "same bytes, stored once");
+    let key = pats_card.split('/').nth(2).unwrap().to_string();
+
+    // Pat's address now serves something else, and a size goes missing, so the picture is
+    // downloaded again. Nobody's viewers are sent to Pat's address, nobody's wish moves to what
+    // it serves now, and the lost size comes back from Sam's address, which still has it.
+    SAME_B_CHANGED.store(true, std::sync::atomic::Ordering::SeqCst);
+    state.storage.delete(&format!("{key}-thumb")).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/images/{key}/thumb"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.headers().get(header::LOCATION).is_none());
+    wishful_thinking::images::store_pending(&state)
+        .await
+        .unwrap();
+    for (client, list) in [(&mut pat, pats), (&mut sam, sams)] {
+        let now = stored_image_path(&client.get(&format!("/lists/{list}")).await.body);
+        assert_eq!(now.as_deref(), Some(sams_card.as_str()));
+    }
+    // And Sam's picture got its lost size back from Sam's own address.
+    assert!(state
+        .storage
+        .get(&format!("{key}-thumb"))
+        .await
+        .unwrap()
+        .is_some());
+}
+
+/// Fill a list with filler wishes, straight in the database, until it holds `total`.
+async fn fill_list(state: &AppState, list_id: i64, total: i64) {
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+         INSERT INTO items (wishlist_id, title) SELECT ?1, 'Filler ' || i FROM n
+          WHERE i > (SELECT COUNT(*) FROM items WHERE wishlist_id = ?1)",
+    )
+    .bind(list_id)
+    .bind(total)
+    .execute(&state.db)
+    .await
+    .unwrap();
+}
+
+async fn wishes_on(state: &AppState, list_id: i64) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM items WHERE wishlist_id = ?")
+        .bind(list_id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_list_holds_at_most_200_wishes_however_they_arrive() {
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
+    let (_owner, mut mom, shared_list, shared_item) = family_with_item(&app).await;
+    let r = mom.post("/lists", &[("title", "Mom's wishes")]).await;
+    let full = id_from_location(r.location.as_deref().unwrap(), "/lists/");
+    let r = mom.post("/lists", &[("title", "Spare")]).await;
+    let spare = id_from_location(r.location.as_deref().unwrap(), "/lists/");
+    fill_list(&state, full, 199).await;
+
+    // The 200th wish fits; the 201st doesn't, and the form keeps what was typed.
+    let add = format!("/lists/{full}/items");
+    let r = mom.post(&add, &[("title", "Kite")]).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    let r = mom
+        .post(&add, &[("title", "Yo-yo"), ("notes", "red")])
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body.contains("already has 200 open wishes"), "{}", r.body);
+    assert!(r.body.contains("Yo-yo") && r.body.contains("red"));
+    assert_eq!(wishes_on(&state, full).await, 200);
+
+    // Copying, moving and saving into a full list are refused too.
+    let r = mom
+        .post(&format!("/lists/{spare}/items"), &[("title", "Ball")])
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    let ball = item_ids(&mom.get(&format!("/lists/{spare}")).await.body)[0];
+    for mode in ["copy", "move"] {
+        mom.post(
+            &format!("/items/{ball}/copy"),
+            &[("target_list", &full.to_string()), ("mode", mode)],
+        )
+        .await;
+        let page = mom.get(&format!("/lists/{spare}")).await.body;
+        assert!(page.contains("already has 200 open wishes"), "{mode}");
+    }
+    let r = mom
+        .post(
+            &format!("/items/{shared_item}/save"),
+            &[("target_list", &full.to_string())],
+        )
+        .await;
+    let page = mom.get(r.location.as_deref().unwrap()).await.body;
+    assert!(page.contains("already has 200 open wishes"));
+    assert_eq!(wishes_on(&state, full).await, 200);
+    assert_eq!(wishes_on(&state, spare).await, 1, "the ball stayed put");
+    assert!(item_ids(&mom.get(&format!("/lists/{shared_list}")).await.body).contains(&shared_item));
+
+    // Removing one makes room again.
+    let first = item_ids(&mom.get(&format!("/lists/{full}")).await.body)[0];
+    mom.post(&format!("/items/{first}/delete"), &[]).await;
+    let r = mom.post(&add, &[("title", "Yo-yo")]).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    assert_eq!(wishes_on(&state, full).await, 200);
+
+    // So does marking one received: received wishes don't count, so a list kept for years never
+    // fills up with old gifts.
+    let got = item_ids(&mom.get(&format!("/lists/{full}")).await.body)[0];
+    mom.post(&format!("/items/{got}/received"), &[]).await;
+    let r = mom.post(&add, &[("title", "Top")]).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    assert_eq!(wishes_on(&state, full).await, 201);
+    // A received wish can be moved into a full list, since it doesn't take up room...
+    let r = mom
+        .post(&format!("/lists/{spare}/items"), &[("title", "Old bike")])
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    let bike = item_ids(&mom.get(&format!("/lists/{spare}")).await.body)[0];
+    mom.post(&format!("/items/{bike}/received"), &[]).await;
+    mom.post(
+        &format!("/items/{bike}/copy"),
+        &[("target_list", &full.to_string()), ("mode", "move")],
+    )
+    .await;
+    assert_eq!(wishes_on(&state, full).await, 202);
+    // ...but putting one back on a full list needs room.
+    mom.post(&format!("/items/{got}/received"), &[]).await;
+    let page = mom.get(&format!("/lists/{full}")).await.body;
+    assert!(page.contains("already has 200 open wishes"));
+    let still: bool = sqlx::query_scalar("SELECT received FROM items WHERE id = ?")
+        .bind(got)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert!(still, "stays received");
+}
+
+#[tokio::test]
+async fn an_amazon_import_stops_when_the_list_is_full() {
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
+    let amazon = fake_amazon().await;
+    let mut c = Client::new(&app);
+    c.signup("Sam", "sam@example.com").await;
+    let list = c.post("/lists", &[("title", "Wishes")]).await;
+    let list_id = id_from_location(&list.location.unwrap(), "/lists/");
+    fill_list(&state, list_id, 199).await;
+    let r = c
+        .post(
+            &format!("/lists/{list_id}/import"),
+            &[("url", &format!("{amazon}/hz/wishlist/ls/L1"))],
+        )
+        .await;
+    let page = c.get(r.location.as_deref().unwrap()).await.body;
+    assert!(page.contains("Added 1 wish from Amazon."), "{page}");
+    assert!(page.contains("Left out 1: a list can hold 200 wishes."));
+    // The one kept is the one at the top of the Amazon list.
+    assert!(page.contains("Kite") && !page.contains("Yo-yo"));
+    assert_eq!(wishes_on(&state, list_id).await, 200);
+}
+
+#[tokio::test]
+async fn one_person_can_own_at_most_50_lists() {
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
+    let mut c = Client::new(&app);
+    c.signup("Sam", "sam@example.com").await;
+    for n in 1..=49 {
+        let r = c.post("/lists", &[("title", &format!("List {n}"))]).await;
+        assert_eq!(r.status, StatusCode::SEE_OTHER);
+    }
+    let r = c.post("/lists", &[("title", "List 50")]).await;
+    let fiftieth = id_from_location(r.location.as_deref().unwrap(), "/lists/");
+    let r = c.post("/lists", &[("title", "One too many")]).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(
+        r.body.contains("already have 50 active lists"),
+        "{}",
+        r.body
+    );
+    assert!(
+        r.body.contains("One too many"),
+        "the form keeps what was typed"
+    );
+
+    // Archived lists don't count, so archiving one makes room...
+    c.post(&format!("/lists/{fiftieth}/archive"), &[]).await;
+    let r = c.post("/lists", &[("title", "Room now")]).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    let room_now = id_from_location(r.location.as_deref().unwrap(), "/lists/");
+    // ...and restoring it needs room again.
+    c.post(&format!("/lists/{fiftieth}/archive"), &[]).await;
+    let page = c.get(&format!("/lists/{fiftieth}")).await.body;
+    assert!(page.contains("already have 50 active lists"), "{page}");
+    let archived: bool = sqlx::query_scalar("SELECT archived FROM wishlists WHERE id = ?")
+        .bind(fiftieth)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert!(archived, "stays archived");
+    let owned: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM wishlists")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(owned, 51);
+
+    // Someone else isn't affected, and deleting one makes room.
+    let mut pat = Client::new(&app);
+    pat.signup("Pat", "pat@example.com").await;
+    assert_eq!(
+        pat.post("/lists", &[("title", "Pat's")]).await.status,
+        StatusCode::SEE_OTHER
+    );
+    c.post(&format!("/lists/{room_now}/delete"), &[]).await;
+    assert_eq!(
+        c.post("/lists", &[("title", "Room again")]).await.status,
+        StatusCode::SEE_OTHER
+    );
+}

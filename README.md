@@ -63,6 +63,7 @@ WT_DATABASE_URL=sqlite:///srv/wishful/data/wishful.db /srv/wishful/wishful_think
 | `WT_LLM_API_KEY` | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | API key |
 | `WT_LLM_BASE_URL` | provider default | Point at a proxy or a local server |
 | `WT_LLM_MODE` | `fallback` | `off`, `fallback` (only when structured data is incomplete) or `always` |
+| `WT_STORAGE_URL` | `storage/` next to the database | Where downloaded pictures are kept: a directory, `file:///path`, or `memory:///` (see *Stored pictures*) |
 | `WT_ALLOW_PRIVATE_FETCH` | off | Let the importer fetch private/loopback addresses. Development only |
 
 ## How URL import works
@@ -113,12 +114,83 @@ Try the importer from the command line:
 cargo run --example import -- https://www.allbirds.com/products/mens-tree-runners
 ```
 
+## Stored pictures
+
+Wish pictures are downloaded and served from the app instead of being hotlinked from the store,
+so they keep working when a store changes its links and viewers' browsers don't contact the
+store. It works much like Rails' ActiveStorage:
+
+- Saving a wish stores the picture's original address (`image_url`) straight away. A background
+  worker then downloads it (4 at a time, 10 s each, up to 10 MB, through the same SSRF-safe client
+  as the importer, taking turns between people so no one can hold up everyone else) and checks by
+  its bytes that it's a JPEG, PNG, GIF or WebP. Until it's stored, or if all 6 attempts fail (waiting 1, 2,
+  4, 8 and 16 hours between them, so a short outage doesn't use them up), pages show the original
+  address. Problems on our side (disk, database) don't use up attempts; they're retried after the
+  same wait. After a longer outage, `wishful_thinking retry-pictures` gives the pictures still
+  waiting a fresh set of attempts, leaving stored ones alone.
+- The worker decodes the picture (one at a time, applying EXIF rotation) and stores the two sizes
+  pages use: `/images/<key>/thumb` (fits 160px, for rows) and `/images/<key>/card` (fits 480px,
+  for item cards and list previews). Pictures with transparency stay PNG; the rest become JPEG,
+  unless the original is already smaller. **The full original isn't kept**: pages never show it,
+  and keeping only small sizes bounds what each picture can cost on disk. The `blobs` table
+  records the original's hash, type and source address; `blob_variants` records the sizes.
+- Pictures it can't decode, or that are over 6,000 px a side or 16 megapixels, aren't kept: the
+  wish keeps showing the original address. (Decoding a picture at the limit can briefly take a
+  couple of hundred MB; consider a `MemoryMax=` in the systemd unit on a small server.)
+- Blobs are named by the SHA-256 of the original, so a picture shared by copies, saves and gift
+  history is stored once and can be cached forever. Files are streamed, not loaded whole.
+- Deleting a wish or list, or changing a wish's picture, wakes the worker, which deletes pictures
+  no wish or gift history uses any more, with all their sizes. It also checks hourly, and hourly
+  sweeps away stray files with no blob behind them (from a crash or a failed delete). Gift
+  history keeps its picture after the wish is gone.
+- If a stored size's file goes missing (say, the database was restored without `storage/`), a
+  page request only flags it, and serves another stored size in its place; a picture with every
+  size flagged falls back to its original address. The worker then checks, as it does before
+  writing or deleting anything in the store, that **the store is the one the database
+  describes**: both hold the same random id (`storage_identity` table, `wishful-thinking-store`
+  file). If they don't match (a wrong `WT_STORAGE_URL` or `WT_DATABASE_URL`, a disk not mounted)
+  it stores, forgets and deletes nothing and logs an error; the pictures come back as soon as the
+  configuration is fixed. Otherwise it
+  downloads the picture again from the wishes' own addresses to remake the size, but only if an
+  address still serves the very same picture. Nothing ever moves to a different picture (a dead
+  product link often serves a placeholder), so the sizes that survived keep being served. If no
+  size survives, the wishes download their original address again like new ones. Page requests
+  never decode anything, never redirect elsewhere, and can't make the app forget a picture.
+- If the store really was lost or replaced, `wishful_thinking reset-pictures` (with the server's
+  `WT_DATABASE_URL` and `WT_STORAGE_URL`) forgets every stored picture and pairs the database with
+  the store as it is now. Restart the server afterwards; it downloads everything again. Pictures
+  whose original addresses no longer work are lost, so only use it when the files really are gone.
+- Pictures existing before this feature are picked up by the same worker on startup.
+
+To add a size, add a `Variant` in `src/images.rs`. The worker downloads stored pictures again to
+make it; until then, or where the store no longer has the picture, another size stands in.
+
+The bytes go through the [`object_store`](https://docs.rs/object_store) crate, which also has S3,
+Google Cloud Storage and Azure backends. To move to one, enable its feature in `Cargo.toml` (e.g.
+`object_store = { version = "0.14", features = ["aws"] }`), set `WT_STORAGE_URL=s3://bucket/prefix`
+and copy the existing `storage/` directory into the bucket. No other code changes are needed.
+Back up `storage/` together with the database.
+
 ## Security notes
 
 - Passwords are hashed with Argon2. Session tokens are 256-bit random and stored as SHA-256 hashes.
 - Cookies are `HttpOnly` and `SameSite=Lax`, and cross-origin form posts are rejected.
 - The importer blocks private, loopback and link-local addresses (including after DNS resolution and
   redirects), caps response size, and times out slow sites.
+- Stored pictures are checked by their content type (SVG and anything that isn't a known raster
+  format is refused), decoded within size limits before they're kept, and served with `nosniff`
+  and a sandboxing CSP.
+- The importer and picture downloader ignore `HTTP(S)_PROXY`: a proxy would resolve addresses
+  itself and get round the check that refuses private ones. A deployment that can only reach the
+  internet through a proxy can't import from URLs.
+- A list holds at most 200 open wishes and one person can have at most 50 active lists
+  (`MAX_WISHES_PER_LIST` and `MAX_LISTS_PER_OWNER` in `src/db.rs`). Received wishes and archived
+  lists don't count, so accounts kept for years never hit the limits, but it also means they don't
+  cap how much an account can store in total. Each stored picture costs well under 1 MB (its two
+  sizes). Nothing limits how many accounts someone can sign up for.
+- `/images/…` needs no sign-in: these are product photos, and public lists show them to anyone.
+  Their addresses are content hashes, so someone who already has a picture's exact bytes could
+  check whether it's stored here, but not which list or person it belongs to.
 - Reservation details are filtered on the server. A list owner's page never contains who reserved what
   unless the list opts in or the giver's chosen reveal month has arrived.
 
@@ -141,6 +213,8 @@ src/
   auth.rs             passwords, sessions, flash messages, CSRF check
   routes/             account, lists, items (+ reservations, import API), families, pages
   importer/           fetch (SSRF-safe), extract (structured data), price, llm, amazon_list, orchestration
+  storage.rs          blob storage over object_store (local disk now, cloud later)
+  images.rs           background worker that downloads and keeps wish pictures
   templates.rs        Askama template contexts
 templates/            HTML templates
 static/               CSS, a little progressive-enhancement JS, favicon, app icons, web app manifest, service worker

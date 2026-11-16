@@ -13,6 +13,10 @@ async-trait = "0.1"
 axum = { version = "0.8", features = ["macros"] }
 axum-extra = { version = "0.10", features = ["form"] }
 base64 = "0.22"
+bytes = "1"
+futures-util = "0.3"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+object_store = "0.14.2"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "gzip", "brotli", "deflate"] }
 scraper = "0.20"

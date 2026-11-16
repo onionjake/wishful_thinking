@@ -27,6 +27,7 @@ pub fn router(state: AppState) -> Router {
             get(pages::icon_maskable_512),
         )
         .route("/healthz", get(|| async { "ok" }))
+        .route("/images/{key}/{variant}", get(pages::stored_image))
         // accounts
         .route("/signup", get(account::signup_page).post(account::signup))
         .route("/login", get(account::login_page).post(account::login))

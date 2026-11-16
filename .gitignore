@@ -27,3 +27,4 @@ rustc-ice-*.txt
 *.db
 *.db-shm
 *.db-wal
+/storage/

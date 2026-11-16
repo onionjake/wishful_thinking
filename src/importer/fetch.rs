@@ -28,6 +28,8 @@ pub enum FetchError {
     TooLarge,
     #[error("Couldn't reach that site ({0})")]
     Network(String),
+    #[error("That link isn't a picture")]
+    NotImage,
 }
 
 pub enum Fetched {
@@ -62,11 +64,29 @@ pub fn is_public_ip(ip: IpAddr) -> bool {
                 return is_public_ip(IpAddr::V4(v4));
             }
             let seg = v6.segments();
+            // NAT64 (64:ff9b::/96, what DNS64 hands an IPv6-only host for an IPv4-only site) and
+            // 6to4 (2002::/16) embed an IPv4 address: judge that one.
+            let embedded = |hi: u16, lo: u16| {
+                IpAddr::V4(std::net::Ipv4Addr::from(
+                    (u32::from(hi) << 16) | u32::from(lo),
+                ))
+            };
+            if seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                return is_public_ip(embedded(seg[6], seg[7]));
+            }
+            if seg[0] == 0x2002 {
+                return is_public_ip(embedded(seg[1], seg[2]));
+            }
             !(v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 || (seg[0] & 0xfe00) == 0xfc00 // unique local
-                || (seg[0] & 0xffc0) == 0xfe80) // link local
+                || (seg[0] & 0xffc0) == 0xfe80 // link local
+                // Other ways of embedding an IPv4 address that could be private: IPv4-compatible
+                // ::/96, local-use NAT64 64:ff9b:1::/48, Teredo 2001::/32.
+                || seg[..6] == [0; 6]
+                || (seg[0] == 0x64 && seg[1] == 0xff9b)
+                || (seg[0] == 0x2001 && seg[1] == 0))
         }
     }
 }
@@ -146,6 +166,8 @@ pub fn build_client(allow_private: bool) -> reqwest::Client {
         header::HeaderValue::from_static("en-US,en;q=0.9"),
     );
     let mut builder = reqwest::Client::builder()
+        // A proxy from the environment would resolve names itself, bypassing our resolver.
+        .no_proxy()
         .user_agent(USER_AGENT)
         .default_headers(headers)
         .timeout(Duration::from_secs(15))
@@ -202,6 +224,64 @@ pub async fn fetch(client: &reqwest::Client, url: &Url) -> Result<Fetched, Fetch
     })
 }
 
+/// Largest picture that will be downloaded and kept.
+pub const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+
+/// The image types we keep, recognised from the file's first bytes rather than the server's
+/// Content-Type (which is often wrong). SVG is deliberately absent: it can carry scripts. So is
+/// AVIF: we can't make page sizes of it without a native decoder.
+pub fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
+    let at = |offset: usize, magic: &[u8]| bytes.get(offset..offset + magic.len()) == Some(magic);
+    if at(0, b"\xFF\xD8\xFF") {
+        Some("image/jpeg")
+    } else if at(0, b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if at(0, b"GIF87a") || at(0, b"GIF89a") {
+        Some("image/gif")
+    } else if at(0, b"RIFF") && at(8, b"WEBP") {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+/// Download a picture: same safety rules as page fetches, a size cap, and only real images.
+pub async fn fetch_image(
+    client: &reqwest::Client,
+    url: &Url,
+) -> Result<(Vec<u8>, &'static str), FetchError> {
+    let mut resp = client
+        .get(url.clone())
+        .header(
+            header::ACCEPT,
+            "image/webp,image/png,image/jpeg,image/*;q=0.8",
+        )
+        // Pictures download in the background; a slow host shouldn't hold the queue for long.
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(map_err)?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(FetchError::Status(status.as_u16()));
+    }
+    if resp
+        .content_length()
+        .is_some_and(|l| l as usize > MAX_IMAGE_BYTES)
+    {
+        return Err(FetchError::TooLarge);
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(map_err)? {
+        body.extend_from_slice(&chunk);
+        if body.len() > MAX_IMAGE_BYTES {
+            return Err(FetchError::TooLarge);
+        }
+    }
+    let content_type = sniff_image(&body).ok_or(FetchError::NotImage)?;
+    Ok((body, content_type))
+}
+
 fn map_err(e: reqwest::Error) -> FetchError {
     if e.is_timeout() {
         FetchError::Timeout
@@ -242,6 +322,10 @@ mod tests {
             "file:///etc/passwd",
             "http://user:pw@example.com/",
             "http://intranet/",
+            "http://[::ffff:10.0.0.1]/",
+            "http://[64:ff9b::a00:1]/",
+            "http://[2002:a00:1::]/",
+            "http://[::a00:1]/",
         ] {
             assert!(
                 validate_url(bad, false).is_err(),
@@ -251,5 +335,31 @@ mod tests {
         assert!(validate_url("example.com/product", false).is_ok());
         assert!(validate_url("https://www.target.com/p/123", false).is_ok());
         assert!(validate_url("http://127.0.0.1:9000/", true).is_ok());
+    }
+
+    #[test]
+    fn judges_ipv4_embedded_in_ipv6_by_the_ipv4_address() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        // DNS64 on an IPv6-only host: public sites must stay reachable, private ones not.
+        assert!(is_public_ip(ip("64:ff9b::808:808")));
+        assert!(!is_public_ip(ip("64:ff9b::a00:1")));
+        assert!(!is_public_ip(ip("64:ff9b::7f00:1")));
+        assert!(is_public_ip(ip("2002:808:808::1")));
+        assert!(!is_public_ip(ip("2002:c0a8:1::1")));
+        assert!(!is_public_ip(ip("64:ff9b:1::808:808")));
+        assert!(!is_public_ip(ip("2001:0:4136:e378::1")));
+        assert!(is_public_ip(ip("2606:4700:4700::1111")));
+    }
+
+    #[test]
+    fn sniffs_image_types() {
+        assert_eq!(sniff_image(b"\xFF\xD8\xFF\xE0rest"), Some("image/jpeg"));
+        assert_eq!(sniff_image(b"\x89PNG\r\n\x1a\n...."), Some("image/png"));
+        assert_eq!(sniff_image(b"GIF89a.."), Some("image/gif"));
+        assert_eq!(sniff_image(b"RIFF\0\0\0\0WEBPVP8 "), Some("image/webp"));
+        assert_eq!(sniff_image(b"\0\0\0\x1cftypavif"), None);
+        assert_eq!(sniff_image(b"<svg xmlns=..."), None);
+        assert_eq!(sniff_image(b"<html>"), None);
+        assert_eq!(sniff_image(b""), None);
     }
 }

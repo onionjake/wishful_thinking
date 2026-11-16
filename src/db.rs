@@ -5,6 +5,7 @@ use std::str::FromStr;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{FromRow, SqlitePool};
 
+use crate::images::Variant;
 use crate::importer::price;
 use crate::util;
 
@@ -121,7 +122,10 @@ const SUMMARY_SELECT: &str = "SELECT w.id, w.title, w.recipient_name, w.event_da
     w.public_token,
     (SELECT group_concat(f.name, ', ') FROM wishlist_families wf JOIN families f ON f.id = wf.family_id WHERE wf.wishlist_id = w.id) AS family_names,
     w.archived,
-    (SELECT group_concat(i.image_url, char(10)) FROM items i WHERE i.wishlist_id = w.id AND i.image_url IS NOT NULL AND i.received = 0) AS images
+    (SELECT group_concat(COALESCE('/images/' || b.key || '/card', i.image_url), char(10))
+       FROM items i LEFT JOIN blobs b ON b.id = i.image_blob_id
+         AND EXISTS (SELECT 1 FROM blob_variants v WHERE v.blob_id = b.id AND v.missing_at IS NULL)
+      WHERE i.wishlist_id = w.id AND i.image_url IS NOT NULL AND i.received = 0) AS images
   FROM wishlists w JOIN users u ON u.id = w.owner_id";
 
 /// Lists the user owns or co-manages.
@@ -168,7 +172,11 @@ pub struct Item {
     pub wishlist_id: i64,
     pub title: String,
     pub url: Option<String>,
+    /// The picture's original address.
     pub image_url: Option<String>,
+    /// Our stored copy of it, once downloaded.
+    pub image_blob_id: Option<i64>,
+    pub image_key: Option<String>,
     pub price_cents: Option<i64>,
     pub currency: String,
     pub store: Option<String>,
@@ -180,7 +188,30 @@ pub struct Item {
     pub claimed_qty: i64,
 }
 
+/// The address pages use for a picture: our stored copy at the given size when there is one,
+/// else the original address.
+fn image_src(key: Option<&str>, url: Option<&str>, variant: Variant) -> Option<String> {
+    key.map(|k| crate::images::variant_path(k, variant))
+        .or_else(|| url.map(str::to_string))
+}
+
 impl Item {
+    /// For the item cards.
+    pub fn image_card(&self) -> Option<String> {
+        image_src(
+            self.image_key.as_deref(),
+            self.image_url.as_deref(),
+            Variant::Card,
+        )
+    }
+    /// For small rows (reservations).
+    pub fn image_thumb(&self) -> Option<String> {
+        image_src(
+            self.image_key.as_deref(),
+            self.image_url.as_deref(),
+            Variant::Thumb,
+        )
+    }
     pub fn price_display(&self) -> Option<String> {
         self.price_cents.map(|c| price::format(c, &self.currency))
     }
@@ -209,6 +240,44 @@ impl Item {
     }
 }
 
+/// Most open wishes a list can hold. Received ones don't count, so a list kept for years never
+/// fills up with old gifts.
+pub const MAX_WISHES_PER_LIST: i64 = 200;
+/// Most active lists one person can own. Archived ones don't count, and neither do lists they
+/// co-manage.
+pub const MAX_LISTS_PER_OWNER: i64 = 50;
+
+/// SQL that's true while list `{list}` has room for another open wish. Inserts and moves include
+/// it in the statement itself, so two at once can't both squeeze past the limit.
+pub fn list_has_room(list: &str) -> String {
+    format!(
+        "(SELECT COUNT(*) FROM items WHERE wishlist_id = {list} AND received = 0) < {MAX_WISHES_PER_LIST}"
+    )
+}
+
+/// SQL that's true while user `{owner}` can have another active list.
+pub fn owner_has_room(owner: &str) -> String {
+    format!(
+        "(SELECT COUNT(*) FROM wishlists WHERE owner_id = {owner} AND archived = 0) < {MAX_LISTS_PER_OWNER}"
+    )
+}
+
+pub fn list_full_message(title: &str) -> String {
+    format!("“{title}” already has {MAX_WISHES_PER_LIST} open wishes, the most a list can hold. Remove some, or mark ones you've got as received, to make room.")
+}
+
+pub fn too_many_lists_message(whose: &str) -> String {
+    format!("{whose} already {} {MAX_LISTS_PER_OWNER} active lists, the most one person can have. Archive or delete one first.", if whose == "You" { "have" } else { "has" })
+}
+
+/// Open wishes on a list.
+pub async fn wish_count(db: &Db, list_id: i64) -> sqlx::Result<i64> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM items WHERE wishlist_id = ? AND received = 0")
+        .bind(list_id)
+        .fetch_one(db)
+        .await
+}
+
 pub fn priority_label(p: i64) -> &'static str {
     match p {
         1 => "Most wanted",
@@ -218,10 +287,11 @@ pub fn priority_label(p: i64) -> &'static str {
 }
 
 pub const ITEM_SELECT: &str =
-    "SELECT i.id, i.wishlist_id, i.title, i.url, i.image_url, i.price_cents, i.currency, i.store,
-    i.notes, i.priority, i.quantity, i.received, i.import_source,
+    "SELECT i.id, i.wishlist_id, i.title, i.url, i.image_url, i.image_blob_id, b.key AS image_key,
+    i.price_cents, i.currency, i.store, i.notes, i.priority, i.quantity, i.received, i.import_source,
     COALESCE((SELECT SUM(c.quantity) FROM claims c WHERE c.item_id = i.id), 0) AS claimed_qty
-  FROM items i";
+  FROM items i LEFT JOIN blobs b ON b.id = i.image_blob_id
+         AND EXISTS (SELECT 1 FROM blob_variants v WHERE v.blob_id = b.id AND v.missing_at IS NULL)";
 
 pub async fn items_for_list(db: &Db, list_id: i64) -> sqlx::Result<Vec<Item>> {
     sqlx::query_as::<_, Item>(&format!(
@@ -277,6 +347,7 @@ pub struct Gift {
     pub title: String,
     pub url: Option<String>,
     pub image_url: Option<String>,
+    pub image_key: Option<String>,
     pub price_cents: Option<i64>,
     pub currency: String,
     pub quantity: i64,
@@ -286,6 +357,13 @@ pub struct Gift {
 }
 
 impl Gift {
+    pub fn image_thumb(&self) -> Option<String> {
+        image_src(
+            self.image_key.as_deref(),
+            self.image_url.as_deref(),
+            Variant::Thumb,
+        )
+    }
     pub fn price_display(&self) -> Option<String> {
         self.price_cents.map(|c| price::format(c, &self.currency))
     }

@@ -126,18 +126,44 @@ pub async fn create_list(
         }
     };
     let mut tx = state.db.begin().await?;
-    let id: i64 = sqlx::query_scalar(
+    // The limit is checked in the insert itself, so two at once can't both get past it.
+    let id: Option<i64> = sqlx::query_scalar(&format!(
         "INSERT INTO wishlists (owner_id, title, recipient_name, description, event_date, show_claims_to_owner)
-         VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
-    )
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE {}
+         RETURNING id",
+        db::owner_has_room("?1")
+    ))
     .bind(user.id)
     .bind(&clean.title)
     .bind(&clean.recipient_name)
     .bind(&clean.description)
     .bind(&clean.event_date)
     .bind(clean.show_claims_to_owner)
-    .fetch_one(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?;
+    let Some(id) = id else {
+        drop(tx);
+        let families = db::families_for_user(&state.db, user.id)
+            .await?
+            .into_iter()
+            .map(|fam| {
+                let on = f.families.contains(&fam.id);
+                (fam, on)
+            })
+            .collect();
+        return render(ListFormPage {
+            ctx,
+            list: None,
+            title: f.title.clone(),
+            recipient_name: f.recipient_name.clone().unwrap_or_default(),
+            description: f.description.clone().unwrap_or_default(),
+            event_date: f.event_date.clone().unwrap_or_default(),
+            show_claims_to_owner: f.show_claims_to_owner.is_some(),
+            can_set_claims: true,
+            families,
+            error: Some(db::too_many_lists_message("You")),
+        });
+    };
     for fam in &f.families {
         // Only families the creator belongs to.
         sqlx::query(
@@ -240,6 +266,8 @@ pub async fn delete_list(
         .bind(id)
         .execute(&state.db)
         .await?;
+    // Deleting the list deleted its wishes; this deletes their pictures.
+    state.image_jobs.wake();
     Ok(redirect_flash(
         "/",
         "ok",
@@ -252,12 +280,35 @@ pub async fn toggle_archive(
     ctx: Ctx,
     Path(id): Path<i64>,
 ) -> AppResult<Response> {
-    let (list, _, _) = editable_list(&state, &ctx, id).await?;
-    sqlx::query("UPDATE wishlists SET archived = ? WHERE id = ?")
-        .bind(!list.archived)
+    let (list, _, user) = editable_list(&state, &ctx, id).await?;
+    if list.archived {
+        // Restoring counts against the owner's active lists.
+        let restored = sqlx::query(&format!(
+            "UPDATE wishlists SET archived = 0 WHERE id = ? AND {}",
+            db::owner_has_room("wishlists.owner_id")
+        ))
         .bind(id)
         .execute(&state.db)
-        .await?;
+        .await?
+        .rows_affected();
+        if restored == 0 {
+            let whose = if list.owner_id == user.id {
+                "You".to_string()
+            } else {
+                "This list's owner".to_string()
+            };
+            return Ok(redirect_flash(
+                &format!("/lists/{id}"),
+                "error",
+                &db::too_many_lists_message(&whose),
+            ));
+        }
+    } else {
+        sqlx::query("UPDATE wishlists SET archived = 1 WHERE id = ?")
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+    }
     let msg = if list.archived {
         "List restored."
     } else {
