@@ -86,7 +86,8 @@ async fn reset_password(email: &str) -> anyhow::Result<()> {
 /// server won't conclude that by itself, since an empty store usually means a wrong path.
 async fn reset_pictures() -> anyhow::Result<()> {
     let db = existing_db().await?;
-    let detached = images::reset_all(&db).await?;
+    let storage = wishful_thinking::storage::Storage::open(&Config::from_env()?.storage_url)?;
+    let detached = images::reset_all(&db, &storage).await?;
     println!("Forgot the stored pictures of {detached} wishes and gifts; the server will download them again.");
     Ok(())
 }

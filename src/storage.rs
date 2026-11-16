@@ -104,15 +104,9 @@ impl Storage {
         }
     }
 
-    /// Whether the store holds no files at all.
-    pub async fn is_empty(&self) -> object_store::Result<bool> {
-        use futures_util::TryStreamExt;
-        Ok(self
-            .store
-            .list(Some(&self.prefix))
-            .try_next()
-            .await?
-            .is_none())
+    /// The store's identity marker (see [`check_identity`]).
+    fn marker(&self) -> Path {
+        self.prefix.clone().join(MARKER)
     }
 
     pub async fn delete(&self, key: &str) -> object_store::Result<()> {
@@ -121,6 +115,63 @@ impl Storage {
             Err(e) => Err(e),
         }
     }
+}
+
+/// The file naming the store, so the app can tell it's looking at the store its database
+/// describes. Not a valid key, so the sweep never touches it.
+const MARKER: &str = "wishful-thinking-store";
+
+/// Whether the store is the one the database describes: both hold the same random id. Nothing
+/// that writes or deletes stored files may run otherwise. A wrong `WT_STORAGE_URL` or an
+/// unmounted disk (the store lacks the marker), or a new or wrong database pointed at a real
+/// store (the database lacks it), would otherwise make the app forget pictures, store new ones
+/// in the wrong place, or sweep away files it doesn't know about. A first run (neither has it)
+/// pairs them.
+pub async fn check_identity(db: &Db, storage: &Storage) -> anyhow::Result<bool> {
+    let in_db: Option<String> = sqlx::query_scalar("SELECT id FROM storage_identity")
+        .fetch_optional(db)
+        .await?;
+    let in_store = match storage.store.get(&storage.marker()).await {
+        Ok(found) => Some(
+            String::from_utf8_lossy(&found.bytes().await?)
+                .trim()
+                .to_string(),
+        ),
+        Err(object_store::Error::NotFound { .. }) => None,
+        Err(e) => return Err(e.into()),
+    };
+    match (in_db, in_store) {
+        (Some(a), Some(b)) => Ok(a == b),
+        (None, None) => {
+            pair(db, storage).await?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Give the database and the store a fresh shared id, so they're recognised as a pair.
+pub async fn pair(db: &Db, storage: &Storage) -> anyhow::Result<()> {
+    use rand::Rng;
+    let id: String = rand::thread_rng()
+        .sample_iter(&rand::distributions::Alphanumeric)
+        .take(32)
+        .map(char::from)
+        .collect();
+    storage
+        .store
+        .put(&storage.marker(), PutPayload::from(id.clone().into_bytes()))
+        .await?;
+    let mut tx = db.begin().await?;
+    sqlx::query("DELETE FROM storage_identity")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO storage_identity (id) VALUES (?)")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 /// A key is the lowercase hex SHA-256 of the file. Anything else is rejected before it can be

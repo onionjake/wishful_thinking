@@ -1777,21 +1777,25 @@ async fn large_pictures_are_resized_and_cleaned_up_with_their_wish() {
             .is_some());
     }
 
-    // If every size goes missing, pages fall back to the store's address straight away. An
-    // empty store looks like a misconfiguration (a wrong path, a disk not mounted), so nothing
-    // is forgotten, and once the files are back, so is our copy.
-    let mut saved = Vec::new();
-    for name in ["card", "thumb"] {
-        let file = format!("{key}-{name}");
-        saved.push((
-            file.clone(),
-            state.storage.get(&file).await.unwrap().unwrap(),
-        ));
-        state.storage.delete(&file).await.unwrap();
-    }
-    assert_eq!(get(card.clone()).await.0, StatusCode::NOT_FOUND);
+    // Pointed at the wrong store (a typo, a disk not mounted), pages fall back to the store's
+    // address and nothing is stored, forgotten or deleted; once it's fixed, our copy is back.
+    let wrong = AppState {
+        storage: wishful_thinking::storage::Storage::open("memory:///").unwrap(),
+        ..state.clone()
+    };
+    let wrong_app = wishful_thinking::app(wrong.clone());
+    let fetch = |app: Router, path: String| async move {
+        app.oneshot(Request::get(&path).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    };
     assert_eq!(
-        get(format!("/images/{key}/thumb")).await.0,
+        fetch(wrong_app.clone(), card.clone()).await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fetch(wrong_app.clone(), format!("/images/{key}/thumb")).await,
         StatusCode::NOT_FOUND
     );
     let fallback = c.get(&format!("/lists/{list_id}")).await.body;
@@ -1799,32 +1803,74 @@ async fn large_pictures_are_resized_and_cleaned_up_with_their_wish() {
         fallback.contains(&format!("src=\"{poster}\"")),
         "falls back"
     );
+    assert!(
+        !wishful_thinking::storage::check_identity(&wrong.db, &wrong.storage)
+            .await
+            .unwrap()
+    );
     assert_eq!(
-        wishful_thinking::images::store_pending(&state)
+        wishful_thinking::images::store_pending(&wrong)
             .await
             .unwrap(),
         0
     );
-    assert_eq!(
-        wishful_thinking::images::purge_unused(&state)
-            .await
-            .unwrap(),
-        0
-    );
-    for (file, bytes) in &saved {
-        state.storage.put(file, bytes.to_vec()).await.unwrap();
-    }
     wishful_thinking::images::store_pending(&state)
         .await
         .unwrap();
     let back = c.get(&format!("/lists/{list_id}")).await.body;
     assert_eq!(stored_image_path(&back).as_deref(), Some(card.as_str()));
 
-    // If the files really are lost, `reset-pictures` makes everything download again.
-    for (file, _) in &saved {
-        state.storage.delete(file).await.unwrap();
+    // A new database pointed at this store doesn't recognise it either, so it won't sweep away
+    // files it knows nothing about.
+    let other = AppState::new(Config::for_tests()).await.unwrap();
+    assert!(
+        !wishful_thinking::storage::check_identity(&other.db, &state.storage)
+            .await
+            .unwrap()
+    );
+
+    // If the files really are lost from the right store, the picture is downloaded again.
+    for name in ["card", "thumb"] {
+        state
+            .storage
+            .delete(&format!("{key}-{name}"))
+            .await
+            .unwrap();
     }
-    wishful_thinking::images::reset_all(&state.db)
+    assert_eq!(get(card.clone()).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        get(format!("/images/{key}/thumb")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(get(card.clone()).await.0, StatusCode::OK);
+
+    // And if the whole store is replaced, `reset-pictures` pairs the new one and everything is
+    // downloaded into it.
+    let replaced = AppState {
+        storage: wishful_thinking::storage::Storage::open("memory:///").unwrap(),
+        ..state.clone()
+    };
+    wishful_thinking::images::reset_all(&replaced.db, &replaced.storage)
+        .await
+        .unwrap();
+    assert_eq!(
+        wishful_thinking::images::store_pending(&replaced)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        fetch(wishful_thinking::app(replaced.clone()), card.clone()).await,
+        StatusCode::OK
+    );
+    // (Back to the original store, the same way.)
+    wishful_thinking::images::reset_all(&state.db, &state.storage)
         .await
         .unwrap();
     assert_eq!(
@@ -1833,7 +1879,6 @@ async fn large_pictures_are_resized_and_cleaned_up_with_their_wish() {
             .unwrap(),
         1
     );
-    assert_eq!(get(card.clone()).await.0, StatusCode::OK);
 
     // A stray file with no blob behind it is swept away; stored pictures are left alone.
     let stray = "ab".repeat(32);

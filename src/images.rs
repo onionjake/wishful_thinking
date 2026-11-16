@@ -60,6 +60,31 @@ pub fn spawn_worker(state: AppState) {
         // Look for stray files at startup and then at most hourly, however often we're woken.
         let mut last_sweep: Option<Instant> = None;
         loop {
+            // Touch nothing unless the store is the one the database describes.
+            match storage::check_identity(&state.db, &state.storage).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::error!(
+                        storage = ?state.storage,
+                        "the picture store doesn't match the database (a wrong WT_STORAGE_URL or \
+                         WT_DATABASE_URL, or a disk not mounted?), so pictures won't be stored or \
+                         cleaned up; pages show their original addresses. If the store really was \
+                         lost or replaced, run `wishful_thinking reset-pictures`."
+                    );
+                    let _ = tokio::time::timeout(
+                        Duration::from_secs(3600),
+                        state.image_jobs.0.notified(),
+                    )
+                    .await;
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "couldn't check the picture store");
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    continue;
+                }
+            }
             match confirm_missing(&state).await {
                 Ok(0) => {}
                 Ok(n) => tracing::info!(forgotten = n, "picture sizes confirmed missing"),
@@ -117,25 +142,15 @@ pub async fn purge_unused(state: &AppState) -> anyhow::Result<usize> {
 }
 
 /// Check the sizes that page requests found missing (`missing_at`). Page requests only flag
-/// them, since anyone can make one; the worker decides. If the store looks empty, it's far more
-/// likely misconfigured (a wrong path, a disk not mounted) than emptied, so nothing is touched:
-/// pages keep falling back to the original addresses until it's fixed, when the flags clear.
-/// Otherwise a size whose file is really gone is forgotten (see [`forget_missing`]).
+/// them, since anyone can make one; the worker decides, and only once it knows the store is the
+/// right one ([`storage::check_identity`]). A size whose file is really gone is forgotten (see
+/// [`forget_missing`]); one that's back clears its flag.
 pub async fn confirm_missing(state: &AppState) -> anyhow::Result<usize> {
     let flagged: Vec<(i64, String, String)> =
         sqlx::query_as("SELECT blob_id, name, key FROM blob_variants WHERE missing_at IS NOT NULL")
             .fetch_all(&state.db)
             .await?;
     if flagged.is_empty() {
-        return Ok(0);
-    }
-    if state.storage.is_empty().await? {
-        tracing::error!(
-            storage = ?state.storage,
-            "the picture store is empty but the database lists stored pictures: check \
-             WT_STORAGE_URL (or where the database is). Pictures show their original addresses \
-             meanwhile. If the files really are lost, run `wishful_thinking reset-pictures`."
-        );
         return Ok(0);
     }
     let mut forgotten = 0;
@@ -156,9 +171,10 @@ pub async fn confirm_missing(state: &AppState) -> anyhow::Result<usize> {
     Ok(forgotten)
 }
 
-/// Forget every stored picture, so each wish shows its original address and downloads it again.
-/// For when the store's files are really lost (`wishful_thinking reset-pictures`).
-pub async fn reset_all(db: &crate::db::Db) -> anyhow::Result<u64> {
+/// Forget every stored picture, so each wish shows its original address and downloads it again,
+/// and pair the database with `storage` as it is now. For when the store was really lost or
+/// replaced (`wishful_thinking reset-pictures`).
+pub async fn reset_all(db: &crate::db::Db, storage: &storage::Storage) -> anyhow::Result<u64> {
     let mut tx = db.begin().await?;
     let mut detached = 0;
     for table in TABLES {
@@ -172,6 +188,7 @@ pub async fn reset_all(db: &crate::db::Db) -> anyhow::Result<u64> {
     }
     sqlx::query("DELETE FROM blobs").execute(&mut *tx).await?;
     tx.commit().await?;
+    storage::pair(db, storage).await?;
     Ok(detached)
 }
 
@@ -234,6 +251,9 @@ fn due(p: &str) -> String {
 /// stored: one full pass of the worker's work apart from purging. Tests call this directly
 /// instead of running the worker.
 pub async fn store_pending(state: &AppState) -> anyhow::Result<usize> {
+    if !storage::check_identity(&state.db, &state.storage).await? {
+        return Ok(0);
+    }
     confirm_missing(state).await?;
     let mut total = 0;
     loop {
@@ -677,8 +697,8 @@ pub async fn variant(
     variant: Variant,
 ) -> anyhow::Result<Option<(storage::ByteStream, String, bool)>> {
     // This size first, then the others; sizes already found missing last.
-    let sizes: Vec<(i64, String, String, String)> = sqlx::query_as(
-        "SELECT b.id, v.name, v.key, v.content_type FROM blobs b
+    let sizes: Vec<(i64, String, String, String, bool)> = sqlx::query_as(
+        "SELECT b.id, v.name, v.key, v.content_type, v.missing_at IS NOT NULL FROM blobs b
            JOIN blob_variants v ON v.blob_id = b.id
           WHERE b.key = ?
           ORDER BY v.missing_at IS NOT NULL, v.name = ? DESC",
@@ -687,9 +707,12 @@ pub async fn variant(
     .bind(variant.name())
     .fetch_all(&state.db)
     .await?;
-    for (blob_id, name, key, content_type) in sizes {
+    for (blob_id, name, key, content_type, flagged) in sizes {
         if let Some(stream) = state.storage.get_stream(&key).await? {
             return Ok(Some((stream, content_type, name == variant.name())));
+        }
+        if flagged {
+            continue;
         }
         // Only flag it: the worker checks before anything is forgotten (see `confirm_missing`).
         // Pages stop using a picture once all its sizes are flagged.

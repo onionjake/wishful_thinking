@@ -37,3 +37,9 @@ CREATE INDEX gift_history_image_blob ON gift_history(image_blob_id);
 CREATE INDEX gift_history_image_url ON gift_history(image_url);
 CREATE INDEX gift_history_image_due ON gift_history(id)
     WHERE image_url IS NOT NULL AND image_blob_id IS NULL;
+
+-- A random id also written to the picture store, so the app can tell the store is the one this
+-- database describes before it writes or deletes anything there (see src/storage.rs).
+CREATE TABLE storage_identity (
+    id TEXT NOT NULL
+);
