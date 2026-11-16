@@ -1492,6 +1492,17 @@ async fn fake_image_host() -> String {
             axum::routing::get(|| async { ([(header::CONTENT_TYPE, "image/png")], PNG) }),
         )
         .route(
+            "/big.png",
+            axum::routing::get(|| async {
+                let img = image::RgbImage::from_fn(1200, 600, |x, y| {
+                    image::Rgb([(x % 256) as u8, (y % 256) as u8, ((x ^ y) % 256) as u8])
+                });
+                let mut out = std::io::Cursor::new(Vec::new());
+                img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+                ([(header::CONTENT_TYPE, "image/png")], out.into_inner())
+            }),
+        )
+        .route(
             // A server that lies about the type: it's HTML, which must not be kept.
             "/fake.png",
             axum::routing::get(|| async {
@@ -1633,11 +1644,6 @@ async fn pictures_are_downloaded_and_served_locally() {
     let copy_id = item_ids(&copied)[0];
     c.post(&format!("/items/{copy_id}/delete"), &[]).await;
     let purge = || wishful_thinking::storage::purge_unattached(&state.db, &state.storage);
-    assert_eq!(purge().await.unwrap(), 0, "too new to purge");
-    sqlx::query("UPDATE blobs SET created_at = datetime('now', '-2 days')")
-        .execute(&state.db)
-        .await
-        .unwrap();
     assert_eq!(purge().await.unwrap(), 1);
     let resp = app
         .clone()
@@ -1645,6 +1651,97 @@ async fn pictures_are_downloaded_and_served_locally() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-    let key = src.trim_start_matches("/images/");
+    let key = src.trim_start_matches("/images/").trim_end_matches("/card");
     assert!(state.storage.get(key).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn large_pictures_are_resized_and_cleaned_up_with_their_wish() {
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
+    let host = fake_image_host().await;
+    let mut c = Client::new(&app);
+    c.signup("Sam", "sam@example.com").await;
+    let list = c.post("/lists", &[("title", "Wishes")]).await;
+    let list_id = id_from_location(&list.location.unwrap(), "/lists/");
+    let poster = format!("{host}/big.png");
+    c.post(
+        &format!("/lists/{list_id}/items"),
+        &[("title", "Poster"), ("image_url", &poster)],
+    )
+    .await;
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        1
+    );
+    let page = c.get(&format!("/lists/{list_id}")).await.body;
+    let card = stored_image_path(&page).unwrap();
+    assert!(card.ends_with("/card"), "{card}");
+    let key = card.split('/').nth(2).unwrap().to_string();
+
+    let get = |path: String| {
+        let app = app.clone();
+        async move {
+            let resp = app
+                .oneshot(Request::get(&path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = resp.status();
+            let ct = resp
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .map(|v| v.to_str().unwrap().to_string());
+            let body = resp.into_body().collect().await.unwrap().to_bytes();
+            (status, ct, body)
+        }
+    };
+    let (status, ct, body) = get(card.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ct.as_deref(), Some("image/jpeg"));
+    let img = image::load_from_memory(&body).unwrap();
+    assert_eq!((img.width(), img.height()), (480, 240));
+    let (_, _, again) = get(card.clone()).await;
+    assert_eq!(again, body, "made once, then served from storage");
+    let (_, _, thumb) = get(format!("/images/{key}/thumb")).await;
+    let img = image::load_from_memory(&thumb).unwrap();
+    assert_eq!((img.width(), img.height()), (160, 80));
+    let (status, _, original) = get(format!("/images/{key}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(image::load_from_memory(&original).unwrap().width(), 1200);
+    assert_eq!(
+        get(format!("/images/{key}/huge")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    for name in ["card", "thumb"] {
+        assert!(state
+            .storage
+            .get(&format!("{key}-{name}"))
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    // Deleting the wish deletes the picture and every size of it.
+    let item_id = item_ids(&page)[0];
+    c.post(&format!("/items/{item_id}/delete"), &[]).await;
+    assert_eq!(
+        wishful_thinking::storage::purge_unattached(&state.db, &state.storage)
+            .await
+            .unwrap(),
+        1
+    );
+    for stored in [key.clone(), format!("{key}-card"), format!("{key}-thumb")] {
+        assert!(
+            state.storage.get(&stored).await.unwrap().is_none(),
+            "{stored}"
+        );
+    }
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blob_variants")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+    assert_eq!(get(card).await.0, StatusCode::NOT_FOUND);
 }

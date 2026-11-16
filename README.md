@@ -125,8 +125,15 @@ contact the store. It works like Rails' ActiveStorage:
   10 MB, through the same SSRF-safe client as the importer) and records it in the `blobs` table.
   Until then, or if all 3 attempts fail (at least an hour apart), pages show the original address.
 - Blobs are named by the SHA-256 of their bytes, so a picture shared by copies, saves and gift
-  history is stored once and can be cached forever. Pictures no wish uses any more are deleted by an
-  hourly purge.
+  history is stored once and can be cached forever.
+- Pages never load the full original. They ask for a named size: `/images/<key>/thumb` (fits
+  160px, for rows) or `/images/<key>/card` (fits 480px, for item cards and list previews). Each size
+  is made the first time it's requested, then stored next to the original (`blob_variants` table).
+  Pictures with transparency stay PNG; the rest become JPEG. Pictures already small enough, and
+  AVIFs (which we keep but can't decode), are served as they are.
+- Deleting a wish or list, or changing a wish's picture, wakes the worker, which deletes pictures
+  no wish or gift history uses any more, with all their sizes. It also checks hourly. Gift
+  history keeps its picture after the wish is gone.
 - Pictures added before this feature existed are picked up by the same worker on startup.
 
 The bytes go through the [`object_store`](https://docs.rs/object_store) crate, which also has S3,

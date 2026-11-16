@@ -137,25 +137,37 @@ pub async fn content_type(db: &Db, key: &str) -> sqlx::Result<Option<String>> {
         .await
 }
 
-/// Delete blobs nothing points at any more (the wish was deleted, or its picture changed).
-/// Blobs younger than a day are left alone so one being attached right now isn't swept away.
+/// Delete blobs nothing points at any more (the wish or list was deleted, or its picture
+/// changed), with their resized variants.
+///
+/// Only the picture worker may call this (tests aside): it is also the only thing that creates
+/// blobs, so a blob it has just stored can't be swept away before it is attached.
 pub async fn purge_unattached(db: &Db, storage: &Storage) -> anyhow::Result<usize> {
     const UNUSED: &str = "NOT EXISTS (SELECT 1 FROM items WHERE image_blob_id = blobs.id)
         AND NOT EXISTS (SELECT 1 FROM gift_history WHERE image_blob_id = blobs.id)";
-    let candidates: Vec<(i64, String)> = sqlx::query_as(&format!(
-        "SELECT id, key FROM blobs WHERE created_at < datetime('now', '-1 day') AND {UNUSED}"
-    ))
-    .fetch_all(db)
-    .await?;
+    let candidates: Vec<(i64, String)> =
+        sqlx::query_as(&format!("SELECT id, key FROM blobs WHERE {UNUSED}"))
+            .fetch_all(db)
+            .await?;
     let mut purged = 0;
     for (id, key) in candidates {
+        let variants: Vec<String> = sqlx::query_scalar(
+            "SELECT key FROM blob_variants WHERE blob_id = ? AND key IS NOT NULL",
+        )
+        .bind(id)
+        .fetch_all(db)
+        .await?;
         // Checked again in the delete itself, in case something attached it meanwhile.
+        // Its variant rows go with it (ON DELETE CASCADE).
         let gone = sqlx::query(&format!("DELETE FROM blobs WHERE id = ? AND {UNUSED}"))
             .bind(id)
             .execute(db)
             .await?
             .rows_affected();
         if gone == 1 {
+            for variant in variants {
+                storage.delete(&variant).await?;
+            }
             storage.delete(&key).await?;
             purged += 1;
         }

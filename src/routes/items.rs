@@ -359,7 +359,8 @@ pub async fn update_item(
     .bind(&clean.import_source)
     .execute(&state.db)
     .await?;
-    if clean.image_url.is_some() && clean.image_url != item.image_url {
+    if clean.image_url != item.image_url {
+        // Fetch the new picture and/or delete the old one.
         state.image_jobs.wake();
     }
     Ok(redirect_flash(
@@ -379,6 +380,8 @@ pub async fn delete_item(
         .bind(id)
         .execute(&state.db)
         .await?;
+    // Its picture is deleted too, unless another wish or someone's gift history still uses it.
+    state.image_jobs.wake();
     Ok(redirect_flash(
         &format!("/lists/{}", list.id),
         "ok",
@@ -420,6 +423,9 @@ pub async fn toggle_received(
         }
     }
     tx.commit().await?;
+    if bought {
+        state.image_jobs.wake();
+    }
     let msg = if item.received {
         "Moved back to the wish list."
     } else if bought {
@@ -868,6 +874,7 @@ async fn release_claim(state: &AppState, claim_id: i64) -> AppResult<()> {
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    state.image_jobs.wake();
     Ok(())
 }
 
@@ -962,6 +969,7 @@ pub async fn toggle_purchased(
         record_gift(&mut tx, id).await?;
     }
     tx.commit().await?;
+    state.image_jobs.wake();
     let back = f
         .back
         .map(|b| util::safe_next(Some(&b)))
@@ -1154,6 +1162,7 @@ pub async fn delete_history(
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
+    state.image_jobs.wake();
     Ok(redirect_flash(
         "/history",
         "ok",

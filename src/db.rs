@@ -5,6 +5,7 @@ use std::str::FromStr;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{FromRow, SqlitePool};
 
+use crate::images::Variant;
 use crate::importer::price;
 use crate::util;
 
@@ -121,7 +122,7 @@ const SUMMARY_SELECT: &str = "SELECT w.id, w.title, w.recipient_name, w.event_da
     w.public_token,
     (SELECT group_concat(f.name, ', ') FROM wishlist_families wf JOIN families f ON f.id = wf.family_id WHERE wf.wishlist_id = w.id) AS family_names,
     w.archived,
-    (SELECT group_concat(COALESCE('/images/' || b.key, i.image_url), char(10))
+    (SELECT group_concat(COALESCE('/images/' || b.key || '/card', i.image_url), char(10))
        FROM items i LEFT JOIN blobs b ON b.id = i.image_blob_id
       WHERE i.wishlist_id = w.id AND i.image_url IS NOT NULL AND i.received = 0) AS images
   FROM wishlists w JOIN users u ON u.id = w.owner_id";
@@ -186,15 +187,29 @@ pub struct Item {
     pub claimed_qty: i64,
 }
 
-/// The address pages use for a picture: our stored copy when there is one, else the original.
-fn image_src(key: Option<&str>, url: Option<&str>) -> Option<String> {
-    key.map(crate::storage::image_path)
+/// The address pages use for a picture: our stored copy at the given size when there is one,
+/// else the original address.
+fn image_src(key: Option<&str>, url: Option<&str>, variant: Variant) -> Option<String> {
+    key.map(|k| crate::images::variant_path(k, variant))
         .or_else(|| url.map(str::to_string))
 }
 
 impl Item {
-    pub fn image_src(&self) -> Option<String> {
-        image_src(self.image_key.as_deref(), self.image_url.as_deref())
+    /// For the item cards.
+    pub fn image_card(&self) -> Option<String> {
+        image_src(
+            self.image_key.as_deref(),
+            self.image_url.as_deref(),
+            Variant::Card,
+        )
+    }
+    /// For small rows (reservations).
+    pub fn image_thumb(&self) -> Option<String> {
+        image_src(
+            self.image_key.as_deref(),
+            self.image_url.as_deref(),
+            Variant::Thumb,
+        )
     }
     pub fn price_display(&self) -> Option<String> {
         self.price_cents.map(|c| price::format(c, &self.currency))
@@ -302,8 +317,12 @@ pub struct Gift {
 }
 
 impl Gift {
-    pub fn image_src(&self) -> Option<String> {
-        image_src(self.image_key.as_deref(), self.image_url.as_deref())
+    pub fn image_thumb(&self) -> Option<String> {
+        image_src(
+            self.image_key.as_deref(),
+            self.image_url.as_deref(),
+            Variant::Thumb,
+        )
     }
     pub fn price_display(&self) -> Option<String> {
         self.price_cents.map(|c| price::format(c, &self.currency))

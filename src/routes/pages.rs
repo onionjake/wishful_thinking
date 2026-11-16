@@ -5,7 +5,7 @@ use axum::response::{IntoResponse, Response};
 use crate::error::{AppError, AppResult};
 use crate::templates::{render, Ctx, DashboardPage, HomePage};
 use crate::AppState;
-use crate::{db, storage};
+use crate::{db, images, storage};
 
 pub async fn home(State(state): State<AppState>, ctx: Ctx) -> AppResult<Response> {
     let Some(user) = ctx.user.clone() else {
@@ -108,9 +108,12 @@ pub async fn icon_maskable_512() -> impl IntoResponse {
     png(include_bytes!("../../static/icon-maskable-512.png"))
 }
 
-/// A stored picture. Keys are content hashes, so a key's bytes never change: cache it forever.
-/// Pictures aren't secret (they're product photos, and public lists show them to anyone), so
-/// this needs no sign-in; the key is unguessable unless you already have the picture.
+/// A stored picture, as stored (`/images/<key>`) or at one of the page sizes
+/// (`/images/<key>/thumb`, `/images/<key>/card`), which are made on first request.
+///
+/// Keys are content hashes, so a key's bytes never change: cache it forever. Pictures aren't
+/// secret (they're product photos, and public lists show them to anyone), so this needs no
+/// sign-in; the key is unguessable unless you already have the picture.
 pub async fn stored_image(
     State(state): State<AppState>,
     axum::extract::Path(key): axum::extract::Path<String>,
@@ -127,7 +130,25 @@ pub async fn stored_image(
         .await
         .map_err(|e| AppError::Other(anyhow::anyhow!("reading stored image {key}: {e}")))?
         .ok_or(AppError::NotFound)?;
-    Ok((
+    Ok(image_response(bytes, content_type))
+}
+
+pub async fn stored_image_variant(
+    State(state): State<AppState>,
+    axum::extract::Path((key, variant)): axum::extract::Path<(String, String)>,
+) -> AppResult<Response> {
+    let variant = images::Variant::from_name(&variant).ok_or(AppError::NotFound)?;
+    if !storage::is_valid_key(&key) {
+        return Err(AppError::NotFound);
+    }
+    let (bytes, content_type) = images::variant(&state, &key, variant)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    Ok(image_response(bytes, content_type))
+}
+
+fn image_response(bytes: bytes::Bytes, content_type: String) -> Response {
+    (
         [
             (header::CONTENT_TYPE, content_type),
             (
@@ -142,5 +163,5 @@ pub async fn stored_image(
         ],
         bytes,
     )
-        .into_response())
+        .into_response()
 }

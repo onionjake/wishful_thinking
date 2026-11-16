@@ -21,7 +21,7 @@
 <div class="rows">
   {% for g in gifts %}
   <div class="row-item">
-    <div class="row-img">{% if let Some(img) = g.image_src() %}<img src="{{ img }}" alt="" loading="lazy" referrerpolicy="no-referrer">{% else %}<span>🎁</span>{% endif %}</div>
+    <div class="row-img">{% if let Some(img) = g.image_thumb() %}<img src="{{ img }}" alt="" loading="lazy" referrerpolicy="no-referrer">{% else %}<span>🎁</span>{% endif %}</div>
     <div class="grow">
       <b>{% if let Some(u) = g.url %}<a href="{{ u }}" target="_blank" rel="noopener noreferrer nofollow">{{ g.title }}</a>{% else %}{{ g.title }}{% endif %}</b>{% if g.quantity > 1 %} ×{{ g.quantity }}{% endif %}
       <div class="muted small">{{ g.purchased_on() }} · {{ g.occasion }}</div>

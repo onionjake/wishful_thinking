@@ -240,6 +240,8 @@ pub async fn delete_list(
         .bind(id)
         .execute(&state.db)
         .await?;
+    // Deleting the list deleted its wishes; this deletes their pictures.
+    state.image_jobs.wake();
     Ok(redirect_flash(
         "/",
         "ok",

@@ -5,6 +5,10 @@
 //! (`image_blob_id`), after which pages serve our copy from `/images/<key>`. Until then, or if the
 //! download keeps failing, pages fall back to the original address.
 //!
+//! Pages show pictures through named [`Variant`]s (resized copies made on first request and then
+//! stored), never the full original. Deleting or changing a wish wakes the worker, which deletes
+//! pictures, and their variants, that nothing uses any more.
+//!
 //! Rows are picked up by a query rather than a queue, so nothing is lost on restart and pictures
 //! that were added before this existed are fetched too. A failed download is retried up to
 //! [`MAX_ATTEMPTS`] times, at least an hour apart.
@@ -12,6 +16,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use image::codecs::jpeg::JpegEncoder;
+use image::codecs::png::{CompressionType, FilterType as PngFilter, PngEncoder};
+use image::imageops::FilterType;
+use image::{DynamicImage, ImageReader, Limits};
 use tokio::sync::Notify;
 
 use crate::storage;
@@ -23,7 +31,7 @@ pub const MAX_ATTEMPTS: i64 = 3;
 const TABLES: [&str; 2] = ["items", "gift_history"];
 const BATCH: i64 = 20;
 
-/// Wakes the worker when a wish with a new picture is saved.
+/// Wakes the worker when a wish's picture is added, changed or deleted.
 #[derive(Clone, Default)]
 pub struct ImageJobs(Arc<Notify>);
 
@@ -129,4 +137,220 @@ async fn store_one(state: &AppState, table: &str, id: i64, url: &str) -> anyhow:
     .await?
     .rows_affected();
     Ok(attached == 1)
+}
+
+/// The sizes pages ask for. Each fits the picture inside a square box (keeping its shape) sized
+/// for 2× screens: `Thumb` for the 56px rows, `Card` for the 132px item cards and list previews.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Variant {
+    Thumb,
+    Card,
+}
+
+impl Variant {
+    pub const ALL: [Variant; 2] = [Variant::Thumb, Variant::Card];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Variant::Thumb => "thumb",
+            Variant::Card => "card",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.name() == name)
+    }
+
+    fn max_side(self) -> u32 {
+        match self {
+            Variant::Thumb => 160,
+            Variant::Card => 480,
+        }
+    }
+
+    /// Where a blob's copy at this size is stored.
+    pub fn storage_key(self, blob_key: &str) -> String {
+        format!("{blob_key}-{}", self.name())
+    }
+}
+
+/// The page address of a stored picture at a given size.
+pub fn variant_path(blob_key: &str, variant: Variant) -> String {
+    format!("{}/{}", storage::image_path(blob_key), variant.name())
+}
+
+/// A stored picture at the requested size, as (bytes, content type), making and storing the
+/// resized copy the first time it's asked for. `None` if the blob isn't stored.
+pub async fn variant(
+    state: &AppState,
+    blob_key: &str,
+    variant: Variant,
+) -> anyhow::Result<Option<(bytes::Bytes, String)>> {
+    let Some((blob_id, original_type)) =
+        sqlx::query_as::<_, (i64, String)>("SELECT id, content_type FROM blobs WHERE key = ?")
+            .bind(blob_key)
+            .fetch_optional(&state.db)
+            .await?
+    else {
+        return Ok(None);
+    };
+    let made: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT key, content_type FROM blob_variants WHERE blob_id = ? AND name = ?",
+    )
+    .bind(blob_id)
+    .bind(variant.name())
+    .fetch_optional(&state.db)
+    .await?;
+    match made {
+        Some((Some(key), Some(content_type))) => {
+            if let Some(bytes) = state.storage.get(&key).await? {
+                return Ok(Some((bytes, content_type)));
+            }
+            // The file went missing: make it again below.
+        }
+        Some(_) => {
+            return Ok(state
+                .storage
+                .get(blob_key)
+                .await?
+                .map(|bytes| (bytes, original_type)));
+        }
+        None => {}
+    }
+
+    let Some(original) = state.storage.get(blob_key).await? else {
+        return Ok(None);
+    };
+    let input = original.clone();
+    let max = variant.max_side();
+    let resized = tokio::task::spawn_blocking(move || resize(&input, max)).await?;
+    let (key, content_type, size, bytes) = match resized {
+        Ok(Some((bytes, content_type))) => {
+            let key = variant.storage_key(blob_key);
+            state.storage.put(&key, bytes.clone()).await?;
+            (
+                Some(key),
+                Some(content_type),
+                Some(bytes.len() as i64),
+                bytes.into(),
+            )
+        }
+        Ok(None) => (None, None, None, original.clone()),
+        Err(e) => {
+            // Undecodable here (e.g. AVIF, which we keep but can't resize): serve the original.
+            tracing::debug!(blob_key, error = %e, "couldn't resize picture");
+            (None, None, None, original.clone())
+        }
+    };
+    sqlx::query(
+        "INSERT INTO blob_variants (blob_id, name, key, content_type, byte_size) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(blob_id, name) DO UPDATE SET key = excluded.key,
+             content_type = excluded.content_type, byte_size = excluded.byte_size",
+    )
+    .bind(blob_id)
+    .bind(variant.name())
+    .bind(&key)
+    .bind(&content_type)
+    .bind(size)
+    .execute(&state.db)
+    .await?;
+    Ok(Some((
+        bytes,
+        content_type.map_or(original_type, str::to_string),
+    )))
+}
+
+/// Shrink a picture to fit in a `max`×`max` box. `Ok(None)` when the original is already small
+/// enough, or shrinking wouldn't make the file smaller. Pictures with transparency stay PNG so
+/// they sit right on any background; the rest become JPEG. Animated GIFs keep their first frame.
+pub fn resize(bytes: &[u8], max: u32) -> anyhow::Result<Option<(Vec<u8>, &'static str)>> {
+    let mut reader = ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
+    // Guard against "decompression bombs": tiny files that claim enormous dimensions.
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(12_000);
+    limits.max_image_height = Some(12_000);
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits);
+    let img = reader.decode()?;
+    if img.width() <= max && img.height() <= max {
+        return Ok(None);
+    }
+    let small = img.resize(max, max, FilterType::Lanczos3);
+    let mut out = Vec::new();
+    let content_type = if has_transparency(&small) {
+        small.write_with_encoder(PngEncoder::new_with_quality(
+            &mut out,
+            CompressionType::Best,
+            PngFilter::Adaptive,
+        ))?;
+        "image/png"
+    } else {
+        DynamicImage::ImageRgb8(small.to_rgb8())
+            .write_with_encoder(JpegEncoder::new_with_quality(&mut out, 82))?;
+        "image/jpeg"
+    };
+    Ok((out.len() < bytes.len()).then_some((out, content_type)))
+}
+
+/// Whether any pixel is see-through (many PNGs have an alpha channel but use none of it).
+fn has_transparency(img: &DynamicImage) -> bool {
+    img.color().has_alpha() && img.to_rgba8().pixels().any(|p| p.0[3] < 255)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn encode(img: DynamicImage, format: image::ImageFormat) -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, format).unwrap();
+        out.into_inner()
+    }
+
+    fn noisy(w: u32, h: u32, alpha: bool) -> DynamicImage {
+        let img = image::RgbaImage::from_fn(w, h, |x, y| {
+            let v = ((x * 7 + y * 13) ^ (x * y)) as u8;
+            image::Rgba([
+                v,
+                v.wrapping_mul(3),
+                v.wrapping_add(90),
+                if alpha && x < w / 2 { 0 } else { 255 },
+            ])
+        });
+        DynamicImage::ImageRgba8(img)
+    }
+
+    #[test]
+    fn shrinks_large_pictures_keeping_shape() {
+        let big = encode(noisy(1200, 600, false), image::ImageFormat::Png);
+        let (out, content_type) = resize(&big, 480).unwrap().expect("resized");
+        assert_eq!(content_type, "image/jpeg", "opaque pictures become JPEG");
+        let img = image::load_from_memory(&out).unwrap();
+        assert_eq!((img.width(), img.height()), (480, 240));
+    }
+
+    #[test]
+    fn keeps_transparency() {
+        let big = encode(noisy(800, 800, true), image::ImageFormat::Png);
+        let (out, content_type) = resize(&big, 160).unwrap().expect("resized");
+        assert_eq!(content_type, "image/png");
+        let img = image::load_from_memory(&out).unwrap();
+        assert_eq!((img.width(), img.height()), (160, 160));
+        assert!(img.to_rgba8().pixels().any(|p| p.0[3] == 0));
+    }
+
+    #[test]
+    fn leaves_small_pictures_alone() {
+        let small = encode(noisy(100, 80, false), image::ImageFormat::Png);
+        assert!(resize(&small, 160).unwrap().is_none());
+        assert!(resize(b"not a picture", 160).is_err());
+    }
+
+    #[test]
+    fn variant_names_round_trip() {
+        for v in Variant::ALL {
+            assert_eq!(Variant::from_name(v.name()), Some(v));
+        }
+        assert_eq!(Variant::from_name("huge"), None);
+    }
 }
