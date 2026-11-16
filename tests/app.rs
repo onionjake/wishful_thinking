@@ -2146,7 +2146,7 @@ async fn a_list_holds_at_most_200_wishes_however_they_arrive() {
         .post(&add, &[("title", "Yo-yo"), ("notes", "red")])
         .await;
     assert_eq!(r.status, StatusCode::OK);
-    assert!(r.body.contains("already has 200 wishes"), "{}", r.body);
+    assert!(r.body.contains("already has 200 open wishes"), "{}", r.body);
     assert!(r.body.contains("Yo-yo") && r.body.contains("red"));
     assert_eq!(wishes_on(&state, full).await, 200);
 
@@ -2163,7 +2163,7 @@ async fn a_list_holds_at_most_200_wishes_however_they_arrive() {
         )
         .await;
         let page = mom.get(&format!("/lists/{spare}")).await.body;
-        assert!(page.contains("already has 200 wishes"), "{mode}");
+        assert!(page.contains("already has 200 open wishes"), "{mode}");
     }
     let r = mom
         .post(
@@ -2172,7 +2172,7 @@ async fn a_list_holds_at_most_200_wishes_however_they_arrive() {
         )
         .await;
     let page = mom.get(r.location.as_deref().unwrap()).await.body;
-    assert!(page.contains("already has 200 wishes"));
+    assert!(page.contains("already has 200 open wishes"));
     assert_eq!(wishes_on(&state, full).await, 200);
     assert_eq!(wishes_on(&state, spare).await, 1, "the ball stayed put");
     assert!(item_ids(&mom.get(&format!("/lists/{shared_list}")).await.body).contains(&shared_item));
@@ -2183,6 +2183,37 @@ async fn a_list_holds_at_most_200_wishes_however_they_arrive() {
     let r = mom.post(&add, &[("title", "Yo-yo")]).await;
     assert_eq!(r.status, StatusCode::SEE_OTHER);
     assert_eq!(wishes_on(&state, full).await, 200);
+
+    // So does marking one received: received wishes don't count, so a list kept for years never
+    // fills up with old gifts.
+    let got = item_ids(&mom.get(&format!("/lists/{full}")).await.body)[0];
+    mom.post(&format!("/items/{got}/received"), &[]).await;
+    let r = mom.post(&add, &[("title", "Top")]).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    assert_eq!(wishes_on(&state, full).await, 201);
+    // A received wish can be moved into a full list, since it doesn't take up room...
+    let r = mom
+        .post(&format!("/lists/{spare}/items"), &[("title", "Old bike")])
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    let bike = item_ids(&mom.get(&format!("/lists/{spare}")).await.body)[0];
+    mom.post(&format!("/items/{bike}/received"), &[]).await;
+    mom.post(
+        &format!("/items/{bike}/copy"),
+        &[("target_list", &full.to_string()), ("mode", "move")],
+    )
+    .await;
+    assert_eq!(wishes_on(&state, full).await, 202);
+    // ...but putting one back on a full list needs room.
+    mom.post(&format!("/items/{got}/received"), &[]).await;
+    let page = mom.get(&format!("/lists/{full}")).await.body;
+    assert!(page.contains("already has 200 open wishes"));
+    let still: bool = sqlx::query_scalar("SELECT received FROM items WHERE id = ?")
+        .bind(got)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert!(still, "stays received");
 }
 
 #[tokio::test]
@@ -2219,22 +2250,40 @@ async fn one_person_can_own_at_most_50_lists() {
         let r = c.post("/lists", &[("title", &format!("List {n}"))]).await;
         assert_eq!(r.status, StatusCode::SEE_OTHER);
     }
-    // Archived lists count too.
     let r = c.post("/lists", &[("title", "List 50")]).await;
     let fiftieth = id_from_location(r.location.as_deref().unwrap(), "/lists/");
-    c.post(&format!("/lists/{fiftieth}/archive"), &[]).await;
     let r = c.post("/lists", &[("title", "One too many")]).await;
     assert_eq!(r.status, StatusCode::OK);
-    assert!(r.body.contains("already have 50 lists"), "{}", r.body);
+    assert!(
+        r.body.contains("already have 50 active lists"),
+        "{}",
+        r.body
+    );
     assert!(
         r.body.contains("One too many"),
         "the form keeps what was typed"
     );
+
+    // Archived lists don't count, so archiving one makes room...
+    c.post(&format!("/lists/{fiftieth}/archive"), &[]).await;
+    let r = c.post("/lists", &[("title", "Room now")]).await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    let room_now = id_from_location(r.location.as_deref().unwrap(), "/lists/");
+    // ...and restoring it needs room again.
+    c.post(&format!("/lists/{fiftieth}/archive"), &[]).await;
+    let page = c.get(&format!("/lists/{fiftieth}")).await.body;
+    assert!(page.contains("already have 50 active lists"), "{page}");
+    let archived: bool = sqlx::query_scalar("SELECT archived FROM wishlists WHERE id = ?")
+        .bind(fiftieth)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert!(archived, "stays archived");
     let owned: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM wishlists")
         .fetch_one(&state.db)
         .await
         .unwrap();
-    assert_eq!(owned, 50);
+    assert_eq!(owned, 51);
 
     // Someone else isn't affected, and deleting one makes room.
     let mut pat = Client::new(&app);
@@ -2243,9 +2292,9 @@ async fn one_person_can_own_at_most_50_lists() {
         pat.post("/lists", &[("title", "Pat's")]).await.status,
         StatusCode::SEE_OTHER
     );
-    c.post(&format!("/lists/{fiftieth}/delete"), &[]).await;
+    c.post(&format!("/lists/{room_now}/delete"), &[]).await;
     assert_eq!(
-        c.post("/lists", &[("title", "Room now")]).await.status,
+        c.post("/lists", &[("title", "Room again")]).await.status,
         StatusCode::SEE_OTHER
     );
 }

@@ -129,10 +129,9 @@ pub async fn create_list(
     // The limit is checked in the insert itself, so two at once can't both get past it.
     let id: Option<i64> = sqlx::query_scalar(&format!(
         "INSERT INTO wishlists (owner_id, title, recipient_name, description, event_date, show_claims_to_owner)
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6
-          WHERE (SELECT COUNT(*) FROM wishlists WHERE owner_id = ?1) < {}
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE {}
          RETURNING id",
-        db::MAX_LISTS_PER_OWNER
+        db::owner_has_room("?1")
     ))
     .bind(user.id)
     .bind(&clean.title)
@@ -162,10 +161,7 @@ pub async fn create_list(
             show_claims_to_owner: f.show_claims_to_owner.is_some(),
             can_set_claims: true,
             families,
-            error: Some(format!(
-                "You already have {} lists, the most one person can have. Delete one you no longer need (archived lists count too).",
-                db::MAX_LISTS_PER_OWNER
-            )),
+            error: Some(db::too_many_lists_message("You")),
         });
     };
     for fam in &f.families {
@@ -284,12 +280,35 @@ pub async fn toggle_archive(
     ctx: Ctx,
     Path(id): Path<i64>,
 ) -> AppResult<Response> {
-    let (list, _, _) = editable_list(&state, &ctx, id).await?;
-    sqlx::query("UPDATE wishlists SET archived = ? WHERE id = ?")
-        .bind(!list.archived)
+    let (list, _, user) = editable_list(&state, &ctx, id).await?;
+    if list.archived {
+        // Restoring counts against the owner's active lists.
+        let restored = sqlx::query(&format!(
+            "UPDATE wishlists SET archived = 0 WHERE id = ? AND {}",
+            db::owner_has_room("wishlists.owner_id")
+        ))
         .bind(id)
         .execute(&state.db)
-        .await?;
+        .await?
+        .rows_affected();
+        if restored == 0 {
+            let whose = if list.owner_id == user.id {
+                "You".to_string()
+            } else {
+                "This list's owner".to_string()
+            };
+            return Ok(redirect_flash(
+                &format!("/lists/{id}"),
+                "error",
+                &db::too_many_lists_message(&whose),
+            ));
+        }
+    } else {
+        sqlx::query("UPDATE wishlists SET archived = 1 WHERE id = ?")
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+    }
     let msg = if list.archived {
         "List restored."
     } else {

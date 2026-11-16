@@ -240,23 +240,39 @@ impl Item {
     }
 }
 
-/// Most wishes a list can hold (received ones included).
+/// Most open wishes a list can hold. Received ones don't count, so a list kept for years never
+/// fills up with old gifts.
 pub const MAX_WISHES_PER_LIST: i64 = 200;
-/// Most lists one person can own (archived ones included; lists they co-manage don't count).
+/// Most active lists one person can own. Archived ones don't count, and neither do lists they
+/// co-manage.
 pub const MAX_LISTS_PER_OWNER: i64 = 50;
 
-/// SQL that's true while list `{list}` has room for another wish. Inserts and moves include it
-/// in the statement itself, so two at once can't both squeeze past the limit.
+/// SQL that's true while list `{list}` has room for another open wish. Inserts and moves include
+/// it in the statement itself, so two at once can't both squeeze past the limit.
 pub fn list_has_room(list: &str) -> String {
-    format!("(SELECT COUNT(*) FROM items WHERE wishlist_id = {list}) < {MAX_WISHES_PER_LIST}")
+    format!(
+        "(SELECT COUNT(*) FROM items WHERE wishlist_id = {list} AND received = 0) < {MAX_WISHES_PER_LIST}"
+    )
+}
+
+/// SQL that's true while user `{owner}` can have another active list.
+pub fn owner_has_room(owner: &str) -> String {
+    format!(
+        "(SELECT COUNT(*) FROM wishlists WHERE owner_id = {owner} AND archived = 0) < {MAX_LISTS_PER_OWNER}"
+    )
 }
 
 pub fn list_full_message(title: &str) -> String {
-    format!("“{title}” already has {MAX_WISHES_PER_LIST} wishes, the most a list can hold. Remove some to make room.")
+    format!("“{title}” already has {MAX_WISHES_PER_LIST} open wishes, the most a list can hold. Remove some, or mark ones you've got as received, to make room.")
 }
 
+pub fn too_many_lists_message(whose: &str) -> String {
+    format!("{whose} already {} {MAX_LISTS_PER_OWNER} active lists, the most one person can have. Archive or delete one first.", if whose == "You" { "have" } else { "has" })
+}
+
+/// Open wishes on a list.
 pub async fn wish_count(db: &Db, list_id: i64) -> sqlx::Result<i64> {
-    sqlx::query_scalar("SELECT COUNT(*) FROM items WHERE wishlist_id = ?")
+    sqlx::query_scalar("SELECT COUNT(*) FROM items WHERE wishlist_id = ? AND received = 0")
         .bind(list_id)
         .fetch_one(db)
         .await

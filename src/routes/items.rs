@@ -412,11 +412,25 @@ pub async fn toggle_received(
 ) -> AppResult<Response> {
     let (item, list, uid) = editable_item(&state, &ctx, id).await?;
     let mut tx = state.db.begin().await?;
-    sqlx::query("UPDATE items SET received = ? WHERE id = ?")
+    // Back on the list counts as an open wish again, so it needs room.
+    let room = if item.received {
+        format!(" AND {}", db::list_has_room("items.wishlist_id"))
+    } else {
+        String::new()
+    };
+    let changed = sqlx::query(&format!("UPDATE items SET received = ? WHERE id = ?{room}"))
         .bind(!item.received)
         .bind(id)
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .rows_affected();
+    if changed == 0 {
+        return Ok(redirect_flash(
+            &format!("/lists/{}", list.id),
+            "error",
+            &db::list_full_message(&list.title),
+        ));
+    }
     // A manager who reserved the gift themselves (a parent buying from their child's list) is
     // done with it once it's received: the item's reservation buttons go away, so mark their
     // reservation bought here or it never reaches their gift history.
@@ -481,8 +495,9 @@ pub async fn copy_item(
                 "Already here.",
             ));
         }
+        // A received wish doesn't take up room.
         let moved = sqlx::query(&format!(
-            "UPDATE items SET wishlist_id = ?1 WHERE id = ?2 AND {}",
+            "UPDATE items SET wishlist_id = ?1 WHERE id = ?2 AND (received = 1 OR {})",
             db::list_has_room("?1")
         ))
         .bind(target.id)
