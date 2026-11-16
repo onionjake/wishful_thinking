@@ -10,6 +10,8 @@ CREATE TABLE blobs (
     key          TEXT    NOT NULL UNIQUE,
     content_type TEXT    NOT NULL,
     byte_size    INTEGER NOT NULL,
+    -- Where it was first downloaded from. Informational only: re-downloads use each wish's own
+    -- address, since wishes sharing a blob (identical bytes) may have come from different places.
     source_url   TEXT,
     -- Downloading the picture again to remake a size that's missing (see src/images.rs).
     refetch_attempts   INTEGER NOT NULL DEFAULT 0,
@@ -24,6 +26,7 @@ ALTER TABLE items ADD COLUMN image_blob_id INTEGER REFERENCES blobs(id) ON DELET
 ALTER TABLE items ADD COLUMN image_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE items ADD COLUMN image_attempted_at TEXT;
 CREATE INDEX items_image_blob ON items(image_blob_id);
+CREATE INDEX items_image_url ON items(image_url);
 -- The downloader's queue: only rows still waiting for a picture.
 CREATE INDEX items_image_due ON items(id) WHERE image_url IS NOT NULL AND image_blob_id IS NULL;
 
@@ -31,5 +34,6 @@ ALTER TABLE gift_history ADD COLUMN image_blob_id INTEGER REFERENCES blobs(id) O
 ALTER TABLE gift_history ADD COLUMN image_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE gift_history ADD COLUMN image_attempted_at TEXT;
 CREATE INDEX gift_history_image_blob ON gift_history(image_blob_id);
+CREATE INDEX gift_history_image_url ON gift_history(image_url);
 CREATE INDEX gift_history_image_due ON gift_history(id)
     WHERE image_url IS NOT NULL AND image_blob_id IS NULL;

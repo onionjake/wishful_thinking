@@ -130,6 +130,15 @@ pub async fn forget_missing(
         .bind(variant.name())
         .execute(&state.db)
         .await?;
+    // If earlier re-downloads of this picture gave up long ago, give it a fresh set of tries.
+    sqlx::query(&format!(
+        "UPDATE blobs SET refetch_attempts = 0, refetch_attempted_at = NULL
+          WHERE id = ? AND refetch_attempts >= {MAX_ATTEMPTS}
+            AND refetch_attempted_at < datetime('now', '-1 day')"
+    ))
+    .bind(blob_id)
+    .execute(&state.db)
+    .await?;
     // No wake: anyone can request a picture, and the hourly pass is soon enough.
     Ok(())
 }
@@ -209,9 +218,9 @@ async fn store_due(state: &AppState, deadline: Option<Instant>) -> anyhow::Resul
         .iter()
         .map(|v| format!("'{}'", v.name()))
         .collect();
-    let incomplete: Vec<(i64, String, String)> = sqlx::query_as(&format!(
-        "SELECT b.id, b.key, b.source_url FROM blobs b
-          WHERE b.source_url IS NOT NULL AND {}
+    let incomplete: Vec<(i64, String)> = sqlx::query_as(&format!(
+        "SELECT b.id, b.key FROM blobs b
+          WHERE {}
             AND (SELECT COUNT(*) FROM blob_variants v WHERE v.blob_id = b.id AND v.name IN ({}))
                 < {}
             AND (EXISTS (SELECT 1 FROM items WHERE image_blob_id = b.id)
@@ -223,11 +232,11 @@ async fn store_due(state: &AppState, deadline: Option<Instant>) -> anyhow::Resul
     ))
     .fetch_all(&state.db)
     .await?;
-    for (blob_id, key, url) in incomplete {
+    for (blob_id, key) in incomplete {
         if deadline.is_some_and(|d| Instant::now() >= d) {
             return Ok((stored, true));
         }
-        if refetch_one(state, blob_id, &key, &url).await {
+        if refetch_one(state, blob_id, &key).await {
             stored += 1;
         }
     }
@@ -339,29 +348,43 @@ async fn store_one(state: &AppState, table: &str, id: i64, url: &str) -> bool {
     .await
 }
 
-/// Download a stored picture again to remake its missing sizes. Only once that succeeds is
-/// anything changed; if the store now has a different picture there, the rows move to it.
-async fn refetch_one(state: &AppState, blob_id: i64, key: &str, url: &str) -> bool {
+/// Download a stored picture again to remake its missing sizes, trying the addresses of the
+/// wishes and gifts that use it. Only an address that still serves the very same picture (same
+/// bytes) counts. Nothing ever moves to a different picture: an address may now serve a
+/// placeholder, or belong to someone else who happened to share these bytes, and the sizes that
+/// survived are better than either.
+async fn refetch_one(state: &AppState, blob_id: i64, key: &str) -> bool {
     attempt(state, "blobs", "refetch_", blob_id, None, async {
-        let (new_id, new_key) = download_and_store(state, url).await?;
-        if new_key != key {
-            for table in TABLES {
-                sqlx::query(&format!(
-                    "UPDATE {table} SET image_blob_id = ? WHERE image_blob_id = ?"
-                ))
-                .bind(new_id)
-                .bind(blob_id)
-                .execute(&state.db)
-                .await?;
-            }
-        }
-        sqlx::query(
-            "UPDATE blobs SET refetch_attempts = 0, refetch_attempted_at = NULL WHERE id = ?",
+        let urls: Vec<String> = sqlx::query_scalar(
+            "SELECT image_url FROM items WHERE image_blob_id = ?1 AND image_url IS NOT NULL
+             UNION
+             SELECT image_url FROM gift_history WHERE image_blob_id = ?1 AND image_url IS NOT NULL
+             LIMIT 5",
         )
         .bind(blob_id)
-        .execute(&state.db)
+        .fetch_all(&state.db)
         .await?;
-        Ok(true)
+        for url in urls {
+            let (bytes, content_type) = match state.importer.download_image(&url).await {
+                Ok(downloaded) => downloaded,
+                Err(_) => continue,
+            };
+            if storage::content_key(&bytes) != key {
+                continue;
+            }
+            let variants = make_variants_queued(bytes, content_type)
+                .await
+                .map_err(|_| NotStored::Picture)?;
+            save_variants(state, blob_id, key, variants).await?;
+            sqlx::query(
+                "UPDATE blobs SET refetch_attempts = 0, refetch_attempted_at = NULL WHERE id = ?",
+            )
+            .bind(blob_id)
+            .execute(&state.db)
+            .await?;
+            return Ok(true);
+        }
+        Err(NotStored::Picture)
     })
     .await
 }
@@ -561,43 +584,35 @@ async fn save_variants(
     Ok(())
 }
 
-/// What a page gets for a stored picture at some size.
-pub enum Served {
-    /// The stored file, a piece at a time, with its content type.
-    File(storage::ByteStream, String),
-    /// This size's file is missing; the worker is fetching it again. Meanwhile, the picture's
-    /// original address.
-    Elsewhere(String),
-}
-
-/// A stored picture at the requested size, or `None` if there's no such picture. Page requests
-/// never decode anything: a missing size is left for the worker to remake.
+/// A stored picture at the requested size, as a stream of its bytes and its content type, or
+/// `None` if there's no such picture. Page requests never decode anything: if this size's file
+/// is missing, it's left for the worker to remake and another stored size is served meanwhile
+/// (the page scales it to fit).
 pub async fn variant(
     state: &AppState,
     blob_key: &str,
     variant: Variant,
-) -> anyhow::Result<Option<Served>> {
-    /// A blob, its source address, and the requested size's file and type if it has one.
-    type Found = (i64, Option<String>, Option<String>, Option<String>);
-    let found: Option<Found> = sqlx::query_as(
-        "SELECT b.id, b.source_url, v.key, v.content_type FROM blobs b
-           LEFT JOIN blob_variants v ON v.blob_id = b.id AND v.name = ?
-          WHERE b.key = ?",
+) -> anyhow::Result<Option<(storage::ByteStream, String)>> {
+    // This size first, then the others.
+    let sizes: Vec<(i64, String, String, String)> = sqlx::query_as(
+        "SELECT b.id, v.name, v.key, v.content_type FROM blobs b
+           JOIN blob_variants v ON v.blob_id = b.id
+          WHERE b.key = ?
+          ORDER BY v.name = ? DESC",
     )
-    .bind(variant.name())
     .bind(blob_key)
-    .fetch_optional(&state.db)
+    .bind(variant.name())
+    .fetch_all(&state.db)
     .await?;
-    let Some((blob_id, source_url, key, content_type)) = found else {
-        return Ok(None);
-    };
-    if let (Some(key), Some(content_type)) = (key, content_type) {
+    for (blob_id, name, key, content_type) in sizes {
         if let Some(stream) = state.storage.get_stream(&key).await? {
-            return Ok(Some(Served::File(stream, content_type)));
+            return Ok(Some((stream, content_type)));
         }
-        forget_missing(state, blob_id, variant).await?;
+        if let Some(lost) = Variant::from_name(&name) {
+            forget_missing(state, blob_id, lost).await?;
+        }
     }
-    Ok(source_url.map(Served::Elsewhere))
+    Ok(None)
 }
 
 /// Whether any pixel is see-through (many PNGs have an alpha channel but use none of it).

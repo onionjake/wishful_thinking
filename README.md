@@ -125,7 +125,7 @@ store. It works much like Rails' ActiveStorage:
   as the importer, taking turns between people so no one can hold up everyone else) and checks by
   its bytes that it's a JPEG, PNG, GIF or WebP. Until it's stored, or if all 6 attempts fail (waiting 1, 2,
   4, 8 and 16 hours between them, so outages don't use them up), pages show the original
-  address. Problems on our side (disk, database) don't count as attempts at all.
+  address. Problems on our side (disk, database) don't use up attempts; they're retried an hour later.
 - The worker decodes the picture (one at a time, applying EXIF rotation) and stores the two sizes
   pages use: `/images/<key>/thumb` (fits 160px, for rows) and `/images/<key>/card` (fits 480px,
   for item cards and list previews). Pictures with transparency stay PNG; the rest become JPEG,
@@ -142,14 +142,15 @@ store. It works much like Rails' ActiveStorage:
   sweeps away stray files with no blob behind them (from a crash or a failed delete). Gift
   history keeps its picture after the wish is gone.
 - If a stored size's file goes missing (say, the database was restored without `storage/`),
-  that size redirects to the original address and the worker downloads the picture again to remake
-  it. Nothing else changes until that succeeds, so if the store's link has died, the sizes that
-  survived keep being served. Page requests never decode anything.
+  another stored size of the picture is served in its place, and the worker downloads the
+  picture again from the wishes' own addresses to remake it, but only if an address still serves
+  the very same picture. Nothing ever moves to a different picture (a dead product link often
+  serves a placeholder), so the sizes that survived keep being served. Page requests never decode
+  anything and never redirect elsewhere.
 - Pictures existing before this feature are picked up by the same worker on startup.
 
 To add a size, add a `Variant` in `src/images.rs`. The worker downloads stored pictures again to
-make it; until then, or where the store's link has died, the new size redirects to the original
-address.
+make it; until then, or where the store no longer has the picture, another size stands in.
 
 The bytes go through the [`object_store`](https://docs.rs/object_store) crate, which also has S3,
 Google Cloud Storage and Azure backends. To move to one, enable its feature in `Cargo.toml` (e.g.

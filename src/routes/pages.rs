@@ -121,21 +121,9 @@ pub async fn stored_image(
     if !storage::is_valid_key(&key) {
         return Err(AppError::NotFound);
     }
-    let (stream, content_type) = match images::variant(&state, &key, variant).await? {
-        Some(images::Served::File(stream, content_type)) => (stream, content_type),
-        Some(images::Served::Elsewhere(url)) => {
-            // Temporary, and not to be cached: our copy will be back once it's downloaded again.
-            return Ok((
-                axum::http::StatusCode::FOUND,
-                [
-                    (header::LOCATION, url),
-                    (header::CACHE_CONTROL, "no-store".to_string()),
-                ],
-            )
-                .into_response());
-        }
-        None => return Err(AppError::NotFound),
-    };
+    let (stream, content_type) = images::variant(&state, &key, variant)
+        .await?
+        .ok_or(AppError::NotFound)?;
     Ok((
         [
             (header::CONTENT_TYPE, content_type),

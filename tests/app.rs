@@ -1491,6 +1491,8 @@ fn small_png() -> Vec<u8> {
     out.into_inner()
 }
 
+static SAME_B_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 async fn fake_image_host() -> String {
     let app = Router::new()
         .route(
@@ -1507,6 +1509,27 @@ async fn fake_image_host() -> String {
                 img.write_to(&mut out, image::ImageFormat::Png).unwrap();
                 ([(header::CONTENT_TYPE, "image/png")], out.into_inner())
             }),
+        )
+        .route(
+            // Two addresses serving the same picture, until the second changes.
+            "/same-{which}",
+            axum::routing::get(
+                |axum::extract::Path(which): axum::extract::Path<String>| async move {
+                    let changed = which == "b.png"
+                        && SAME_B_CHANGED.load(std::sync::atomic::Ordering::SeqCst);
+                    let img = image::RgbImage::from_fn(700, 700, |x, y| {
+                        let v = if changed {
+                            255 - (x % 256) as u8
+                        } else {
+                            (x % 256) as u8
+                        };
+                        image::Rgb([v, (y % 256) as u8, 77])
+                    });
+                    let mut out = std::io::Cursor::new(Vec::new());
+                    img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+                    ([(header::CONTENT_TYPE, "image/png")], out.into_inner())
+                },
+            ),
         )
         .route(
             // A picture that is only there once: its link dies after the first download.
@@ -1773,9 +1796,8 @@ async fn large_pictures_are_resized_and_cleaned_up_with_their_wish() {
         .unwrap()
         .is_some());
 
-    // If a stored size goes missing, it's redirected to the store's address (not cached) and
-    // the worker downloads the picture again; the other size keeps working meanwhile. Page
-    // requests never decode anything themselves.
+    // If a stored size goes missing, the other size is served in its place while the worker
+    // downloads the picture again. Page requests never decode anything themselves.
     let item_id = item_ids(&page)[0];
     state.storage.delete(&format!("{key}-card")).await.unwrap();
     let resp = app
@@ -1783,10 +1805,13 @@ async fn large_pictures_are_resized_and_cleaned_up_with_their_wish() {
         .oneshot(Request::get(&card).body(Body::empty()).unwrap())
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::FOUND);
-    assert_eq!(resp.headers()[header::LOCATION], poster.as_str());
-    assert_eq!(resp.headers()[header::CACHE_CONTROL], "no-store");
-    assert_eq!(get(format!("/images/{key}/thumb")).await.0, StatusCode::OK);
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "served from the other size meanwhile"
+    );
+    let stand_in = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(image::load_from_memory(&stand_in).unwrap().width(), 160);
     assert_eq!(
         wishful_thinking::images::store_pending(&state)
             .await
@@ -1856,10 +1881,7 @@ async fn losing_one_size_never_costs_the_others_when_the_link_has_died() {
                 .status()
         }
     };
-    assert_eq!(
-        status(format!("/images/{key}/thumb")).await,
-        StatusCode::FOUND
-    );
+    assert_eq!(status(format!("/images/{key}/thumb")).await, StatusCode::OK);
     assert_eq!(
         wishful_thinking::images::store_pending(&state)
             .await
@@ -1877,4 +1899,79 @@ async fn losing_one_size_never_costs_the_others_when_the_link_has_died() {
     assert_eq!(status(card.clone()).await, StatusCode::OK);
     let page = c.get(&format!("/lists/{list_id}")).await.body;
     assert_eq!(stored_image_path(&page).as_deref(), Some(card.as_str()));
+}
+
+#[tokio::test]
+async fn a_shared_picture_never_follows_someone_elses_address() {
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
+    let host = fake_image_host().await;
+    // Pat adds a picture first; Sam adds the same picture from another address.
+    let mut pat = Client::new(&app);
+    pat.signup("Pat", "pat@example.com").await;
+    let pats = pat.post("/lists", &[("title", "Pat's")]).await;
+    let pats = id_from_location(&pats.location.unwrap(), "/lists/");
+    let b = format!("{host}/same-b.png");
+    pat.post(
+        &format!("/lists/{pats}/items"),
+        &[("title", "Mug"), ("image_url", &b)],
+    )
+    .await;
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        1
+    );
+    let mut sam = Client::new(&app);
+    sam.signup("Sam", "sam@example.com").await;
+    let sams = sam.post("/lists", &[("title", "Sam's")]).await;
+    let sams = id_from_location(&sams.location.unwrap(), "/lists/");
+    let a = format!("{host}/same-a.png");
+    sam.post(
+        &format!("/lists/{sams}/items"),
+        &[("title", "Mug"), ("image_url", &a)],
+    )
+    .await;
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        1
+    );
+    let pats_card = stored_image_path(&pat.get(&format!("/lists/{pats}")).await.body).unwrap();
+    let sams_card = stored_image_path(&sam.get(&format!("/lists/{sams}")).await.body).unwrap();
+    assert_eq!(pats_card, sams_card, "same bytes, stored once");
+    let key = pats_card.split('/').nth(2).unwrap().to_string();
+
+    // Pat's address now serves something else, and a size goes missing, so the picture is
+    // downloaded again. Nobody's viewers are sent to Pat's address, nobody's wish moves to what
+    // it serves now, and the lost size comes back from Sam's address, which still has it.
+    SAME_B_CHANGED.store(true, std::sync::atomic::Ordering::SeqCst);
+    state.storage.delete(&format!("{key}-thumb")).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/images/{key}/thumb"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.headers().get(header::LOCATION).is_none());
+    wishful_thinking::images::store_pending(&state)
+        .await
+        .unwrap();
+    for (client, list) in [(&mut pat, pats), (&mut sam, sams)] {
+        let now = stored_image_path(&client.get(&format!("/lists/{list}")).await.body);
+        assert_eq!(now.as_deref(), Some(sams_card.as_str()));
+    }
+    // And Sam's picture got its lost size back from Sam's own address.
+    assert!(state
+        .storage
+        .get(&format!("{key}-thumb"))
+        .await
+        .unwrap()
+        .is_some());
 }
