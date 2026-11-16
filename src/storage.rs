@@ -158,10 +158,8 @@ pub async fn pair(db: &Db, storage: &Storage) -> anyhow::Result<()> {
         .take(32)
         .map(char::from)
         .collect();
-    storage
-        .store
-        .put(&storage.marker(), PutPayload::from(id.clone().into_bytes()))
-        .await?;
+    // The database row is written first but only committed once the marker is in the store,
+    // so a failure on either side leaves the pair as it was.
     let mut tx = db.begin().await?;
     sqlx::query("DELETE FROM storage_identity")
         .execute(&mut *tx)
@@ -169,6 +167,10 @@ pub async fn pair(db: &Db, storage: &Storage) -> anyhow::Result<()> {
     sqlx::query("INSERT INTO storage_identity (id) VALUES (?)")
         .bind(&id)
         .execute(&mut *tx)
+        .await?;
+    storage
+        .store
+        .put(&storage.marker(), PutPayload::from(id.into_bytes()))
         .await?;
     tx.commit().await?;
     Ok(())

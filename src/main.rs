@@ -4,7 +4,8 @@ use sqlx::sqlite::SqliteConnectOptions;
 use tracing_subscriber::EnvFilter;
 use wishful_thinking::{app, auth, db, images, AppState, Config};
 
-const USAGE: &str = "usage: wishful_thinking [reset-password EMAIL | reset-pictures]";
+const USAGE: &str =
+    "usage: wishful_thinking [reset-password EMAIL | retry-pictures | reset-pictures]";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -17,6 +18,7 @@ async fn main() -> anyhow::Result<()> {
     {
         [] => {}
         ["reset-password", email] => return reset_password(email).await,
+        ["retry-pictures"] => return retry_pictures().await,
         ["reset-pictures"] => return reset_pictures().await,
         _ => {
             eprintln!("{USAGE}");
@@ -81,6 +83,15 @@ async fn reset_password(email: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `wishful_thinking retry-pictures`: give pictures that ran out of download attempts (say,
+/// after a long outage) a fresh set. Stored pictures are untouched.
+async fn retry_pictures() -> anyhow::Result<()> {
+    let db = existing_db().await?;
+    let reset = images::retry_all(&db).await?;
+    println!("Gave {reset} pictures fresh download attempts. Restart the server to start at once.");
+    Ok(())
+}
+
 /// `wishful_thinking reset-pictures`: forget every stored picture so each wish shows its original
 /// address and downloads it again. For when the picture store's files really are lost; the
 /// server won't conclude that by itself, since an empty store usually means a wrong path.
@@ -89,7 +100,7 @@ async fn reset_pictures() -> anyhow::Result<()> {
     let storage = wishful_thinking::storage::Storage::open(&Config::from_env()?.storage_url)?;
     let detached = images::reset_all(&db, &storage).await?;
     println!(
-        "Reset the pictures of {detached} wishes and gifts. Restart the server; it will download them again."
+        "Forgot the stored pictures of {detached} wishes and gifts. Restart the server; it will download them again."
     );
     Ok(())
 }

@@ -483,7 +483,7 @@ async fn refetch_one(state: &AppState, blob_id: i64, key: &str) -> bool {
             "SELECT image_url FROM items WHERE image_blob_id = ?1 AND image_url IS NOT NULL
              UNION
              SELECT image_url FROM gift_history WHERE image_blob_id = ?1 AND image_url IS NOT NULL
-             LIMIT 5",
+             LIMIT 20",
         )
         .bind(blob_id)
         .fetch_all(&state.db)
