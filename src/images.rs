@@ -91,6 +91,8 @@ pub fn spawn_worker(state: AppState) {
                     Err(e) => tracing::warn!(error = %e, "stray picture sweep failed"),
                 }
             }
+            // However often we're woken, run at most every few seconds.
+            tokio::time::sleep(Duration::from_secs(5)).await;
             if !more {
                 let _ =
                     tokio::time::timeout(Duration::from_secs(3600), state.image_jobs.0.notified())
@@ -128,7 +130,7 @@ pub async fn forget_missing(
         .bind(variant.name())
         .execute(&state.db)
         .await?;
-    state.image_jobs.wake();
+    // No wake: anyone can request a picture, and the hourly pass is soon enough.
     Ok(())
 }
 
@@ -162,11 +164,14 @@ pub async fn store_pending(state: &AppState) -> anyhow::Result<usize> {
 async fn store_due(state: &AppState, deadline: Option<Instant>) -> anyhow::Result<(usize, bool)> {
     let mut stored = 0;
     let mut tried = std::collections::HashSet::new();
-    for table in TABLES {
-        loop {
-            if deadline.is_some_and(|d| Instant::now() >= d) {
-                return Ok((stored, true));
-            }
+    // A batch from each table in turn, so neither can starve the other.
+    let mut tables: Vec<&str> = TABLES.to_vec();
+    while !tables.is_empty() {
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            return Ok((stored, true));
+        }
+        let mut still_due = Vec::new();
+        for table in tables {
             // Take turns between people: everyone's first picture, then everyone's second, and
             // so on, so one person adding thousands of wishes can't hold up everyone else's.
             let owner = owner_of(table);
@@ -186,8 +191,9 @@ async fn store_due(state: &AppState, deadline: Option<Instant>) -> anyhow::Resul
                 .take(BATCH as usize)
                 .collect();
             if due.is_empty() {
-                break;
+                continue;
             }
+            still_due.push(table);
             // A few at a time, so one slow store doesn't hold up everyone else's pictures.
             stored += futures_util::stream::iter(due)
                 .map(|(id, url)| async move { store_one(state, table, id, &url).await })
@@ -196,6 +202,7 @@ async fn store_due(state: &AppState, deadline: Option<Instant>) -> anyhow::Resul
                 .count()
                 .await;
         }
+        tables = still_due;
     }
     // Stored pictures missing a size (its file was lost, or the size is new): download again.
     let names: Vec<String> = Variant::ALL
@@ -428,9 +435,12 @@ pub fn variant_path(blob_key: &str, variant: Variant) -> String {
 /// only one picture is decoded at a time.
 static DECODE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
-/// Largest picture we keep, in pixels per side and in decoded bytes (about 24 megapixels with
-/// transparency, 32 without). Anything bigger is left hotlinked rather than stored.
+/// Largest picture we keep: pixels per side, pixels in all (16 megapixels, plenty for a product
+/// photo) and decoded bytes. Anything bigger is left hotlinked rather than stored. The pixel cap
+/// is what bounds memory: some decoders need several times the output size while they work (a
+/// progressive CMYK JPEG keeps every coefficient), and the byte cap only counts the output.
 const MAX_SIDE: u32 = 6_000;
+const MAX_PIXELS: u64 = 16_000_000;
 const MAX_DECODED_BYTES: u64 = 96 * 1024 * 1024;
 
 /// One stored size: its bytes and content type.
@@ -452,8 +462,10 @@ pub fn make_variants(
     limits.max_alloc = Some(MAX_DECODED_BYTES);
     reader.limits(limits);
     let mut decoder = reader.into_decoder()?;
+    let (width, height) = decoder.dimensions();
     anyhow::ensure!(
-        decoder.total_bytes() <= MAX_DECODED_BYTES,
+        u64::from(width) * u64::from(height) <= MAX_PIXELS
+            && decoder.total_bytes() <= MAX_DECODED_BYTES,
         "picture too large to decode"
     );
     // Phone photos are often stored sideways with an EXIF note saying which way is up.
@@ -659,6 +671,10 @@ mod tests {
         assert!(make_variants(b"not a picture", "image/png").is_err());
         let too_wide = encode(noisy(MAX_SIDE + 1, 2, false), image::ImageFormat::Png);
         assert!(make_variants(&too_wide, "image/png").is_err());
+        // Within the side limit but over the pixel limit (5,000 × 3,300 = 16.5 MP).
+        let flat = image::RgbImage::from_pixel(5_000, 3_300, image::Rgb([9, 9, 9]));
+        let too_many = encode(DynamicImage::ImageRgb8(flat), image::ImageFormat::Png);
+        assert!(make_variants(&too_many, "image/png").is_err());
     }
 
     #[test]

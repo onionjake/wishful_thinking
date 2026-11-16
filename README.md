@@ -132,8 +132,9 @@ store. It works much like Rails' ActiveStorage:
   unless the original is already smaller. **The full original isn't kept**: pages never show it,
   and keeping only small sizes bounds what each picture can cost on disk. The `blobs` table
   records the original's hash, type and source address; `blob_variants` records the sizes.
-- Pictures it can't decode, or that are over 6,000 px a side or 96 MB decoded, aren't kept: the
-  wish keeps showing the original address.
+- Pictures it can't decode, or that are over 6,000 px a side or 16 megapixels, aren't kept: the
+  wish keeps showing the original address. (Decoding a picture at the limit can briefly take a
+  couple of hundred MB; consider a `MemoryMax=` in the systemd unit on a small server.)
 - Blobs are named by the SHA-256 of the original, so a picture shared by copies, saves and gift
   history is stored once and can be cached forever. Files are streamed, not loaded whole.
 - Deleting a wish or list, or changing a wish's picture, wakes the worker, which deletes pictures

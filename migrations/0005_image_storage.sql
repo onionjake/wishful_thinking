@@ -24,8 +24,12 @@ ALTER TABLE items ADD COLUMN image_blob_id INTEGER REFERENCES blobs(id) ON DELET
 ALTER TABLE items ADD COLUMN image_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE items ADD COLUMN image_attempted_at TEXT;
 CREATE INDEX items_image_blob ON items(image_blob_id);
+-- The downloader's queue: only rows still waiting for a picture.
+CREATE INDEX items_image_due ON items(id) WHERE image_url IS NOT NULL AND image_blob_id IS NULL;
 
 ALTER TABLE gift_history ADD COLUMN image_blob_id INTEGER REFERENCES blobs(id) ON DELETE SET NULL;
 ALTER TABLE gift_history ADD COLUMN image_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE gift_history ADD COLUMN image_attempted_at TEXT;
 CREATE INDEX gift_history_image_blob ON gift_history(image_blob_id);
+CREATE INDEX gift_history_image_due ON gift_history(id)
+    WHERE image_url IS NOT NULL AND image_blob_id IS NULL;
