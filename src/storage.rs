@@ -208,8 +208,12 @@ pub async fn sweep_orphans(
             .fetch_one(db)
             .await?;
         if !known {
-            storage.store.delete(&meta.location).await?;
-            swept += 1;
+            match storage.store.delete(&meta.location).await {
+                Ok(()) => swept += 1,
+                Err(e) => {
+                    tracing::warn!(file = %meta.location, error = %e, "couldn't delete stray file")
+                }
+            }
         }
     }
     Ok(swept)

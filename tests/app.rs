@@ -1509,6 +1509,26 @@ async fn fake_image_host() -> String {
             }),
         )
         .route(
+            // A picture that is only there once: its link dies after the first download.
+            "/once.png",
+            axum::routing::get(|| async {
+                static SERVED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if SERVED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    return axum::response::IntoResponse::into_response(StatusCode::NOT_FOUND);
+                }
+                let img = image::RgbImage::from_fn(900, 900, |x, y| {
+                    image::Rgb([(x % 256) as u8, (y % 200) as u8, ((x + y) % 256) as u8])
+                });
+                let mut out = std::io::Cursor::new(Vec::new());
+                img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+                axum::response::IntoResponse::into_response((
+                    [(header::CONTENT_TYPE, "image/png")],
+                    out.into_inner(),
+                ))
+            }),
+        )
+        .route(
             // A server that lies about the type: it's HTML, which must not be kept.
             "/fake.png",
             axum::routing::get(|| async {
@@ -1753,13 +1773,20 @@ async fn large_pictures_are_resized_and_cleaned_up_with_their_wish() {
         .unwrap()
         .is_some());
 
-    // If a stored size goes missing, pages fall back to the store's address and the worker
-    // downloads the picture again. Page requests never decode anything themselves.
+    // If a stored size goes missing, it's redirected to the store's address (not cached) and
+    // the worker downloads the picture again; the other size keeps working meanwhile. Page
+    // requests never decode anything themselves.
     let item_id = item_ids(&page)[0];
     state.storage.delete(&format!("{key}-card")).await.unwrap();
-    assert_eq!(get(card.clone()).await.0, StatusCode::NOT_FOUND);
-    let page = c.get(&format!("/lists/{list_id}")).await.body;
-    assert!(page.contains(&format!("src=\"{poster}\"")), "falls back");
+    let resp = app
+        .clone()
+        .oneshot(Request::get(&card).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    assert_eq!(resp.headers()[header::LOCATION], poster.as_str());
+    assert_eq!(resp.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(get(format!("/images/{key}/thumb")).await.0, StatusCode::OK);
     assert_eq!(
         wishful_thinking::images::store_pending(&state)
             .await
@@ -1792,4 +1819,62 @@ async fn large_pictures_are_resized_and_cleaned_up_with_their_wish() {
         .unwrap();
     assert_eq!(rows, 0);
     assert_eq!(get(card).await.0, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn losing_one_size_never_costs_the_others_when_the_link_has_died() {
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
+    let host = fake_image_host().await;
+    let mut c = Client::new(&app);
+    c.signup("Sam", "sam@example.com").await;
+    let list = c.post("/lists", &[("title", "Wishes")]).await;
+    let list_id = id_from_location(&list.location.unwrap(), "/lists/");
+    let once = format!("{host}/once.png");
+    c.post(
+        &format!("/lists/{list_id}/items"),
+        &[("title", "Rare"), ("image_url", &once)],
+    )
+    .await;
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        1
+    );
+    let card = stored_image_path(&c.get(&format!("/lists/{list_id}")).await.body).unwrap();
+    let key = card.split('/').nth(2).unwrap().to_string();
+
+    // The thumbnail is lost, and the store's link no longer works.
+    state.storage.delete(&format!("{key}-thumb")).await.unwrap();
+    let status = |path: String| {
+        let app = app.clone();
+        async move {
+            app.oneshot(Request::get(&path).body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+    assert_eq!(
+        status(format!("/images/{key}/thumb")).await,
+        StatusCode::FOUND
+    );
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        wishful_thinking::images::purge_unused(&state)
+            .await
+            .unwrap(),
+        0
+    );
+
+    // The card is untouched and still served; the wish still uses our copy.
+    assert_eq!(status(card.clone()).await, StatusCode::OK);
+    let page = c.get(&format!("/lists/{list_id}")).await.body;
+    assert_eq!(stored_image_path(&page).as_deref(), Some(card.as_str()));
 }

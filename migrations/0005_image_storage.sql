@@ -11,12 +11,15 @@ CREATE TABLE blobs (
     content_type TEXT    NOT NULL,
     byte_size    INTEGER NOT NULL,
     source_url   TEXT,
+    -- Downloading the picture again to remake a size that's missing (see src/images.rs).
+    refetch_attempts   INTEGER NOT NULL DEFAULT 0,
+    refetch_attempted_at TEXT,
     created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
 -- image_url stays the picture's original address (what the item form shows and edits).
 -- image_blob_id is the downloaded copy, filled in by the background downloader; until then, or
--- if every attempt fails, pages fall back to image_url.
+-- if every attempt fails, pages fall back to image_url. The attempts are spaced 1, 2, 4… hours.
 ALTER TABLE items ADD COLUMN image_blob_id INTEGER REFERENCES blobs(id) ON DELETE SET NULL;
 ALTER TABLE items ADD COLUMN image_attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE items ADD COLUMN image_attempted_at TEXT;
