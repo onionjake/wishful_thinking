@@ -130,6 +130,25 @@ pub async fn forget_missing(
         .bind(variant.name())
         .execute(&state.db)
         .await?;
+    // With no size left there's nothing to show: detach the picture so pages fall back to the
+    // original address and the worker downloads whatever it serves now, like a new wish. (Only
+    // rows change here; the empty blob is the worker's to purge.)
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blob_variants WHERE blob_id = ?")
+        .bind(blob_id)
+        .fetch_one(&state.db)
+        .await?;
+    if left == 0 {
+        for table in TABLES {
+            sqlx::query(&format!(
+                "UPDATE {table} SET image_blob_id = NULL, image_attempts = 0, image_attempted_at = NULL
+                  WHERE image_blob_id = ?"
+            ))
+            .bind(blob_id)
+            .execute(&state.db)
+            .await?;
+        }
+        return Ok(());
+    }
     // If earlier re-downloads of this picture gave up long ago, give it a fresh set of tries.
     sqlx::query(&format!(
         "UPDATE blobs SET refetch_attempts = 0, refetch_attempted_at = NULL
@@ -320,11 +339,13 @@ where
 async fn store_one(state: &AppState, table: &str, id: i64, url: &str) -> bool {
     attempt(state, table, "image_", id, Some(url), async {
         // The same address is often already stored (a copied wish, a gift bought from a list).
+        // (Only one with sizes to show.)
         let known: Option<i64> = sqlx::query_scalar(
-            "SELECT image_blob_id FROM items WHERE image_url = ?1 AND image_blob_id IS NOT NULL
-             UNION ALL
-             SELECT image_blob_id FROM gift_history WHERE image_url = ?1 AND image_blob_id IS NOT NULL
-             LIMIT 1",
+            "SELECT id FROM blobs b
+              WHERE (id IN (SELECT image_blob_id FROM items WHERE image_url = ?1)
+                     OR id IN (SELECT image_blob_id FROM gift_history WHERE image_url = ?1))
+                AND EXISTS (SELECT 1 FROM blob_variants v WHERE v.blob_id = b.id)
+              LIMIT 1",
         )
         .bind(url)
         .fetch_optional(&state.db)
@@ -584,15 +605,15 @@ async fn save_variants(
     Ok(())
 }
 
-/// A stored picture at the requested size, as a stream of its bytes and its content type, or
-/// `None` if there's no such picture. Page requests never decode anything: if this size's file
+/// A stored picture at the requested size, as a stream of its bytes, its content type and
+/// whether it really is that size (rather than a stand-in), or `None` if there's no such picture. Page requests never decode anything: if this size's file
 /// is missing, it's left for the worker to remake and another stored size is served meanwhile
 /// (the page scales it to fit).
 pub async fn variant(
     state: &AppState,
     blob_key: &str,
     variant: Variant,
-) -> anyhow::Result<Option<(storage::ByteStream, String)>> {
+) -> anyhow::Result<Option<(storage::ByteStream, String, bool)>> {
     // This size first, then the others.
     let sizes: Vec<(i64, String, String, String)> = sqlx::query_as(
         "SELECT b.id, v.name, v.key, v.content_type FROM blobs b
@@ -606,7 +627,7 @@ pub async fn variant(
     .await?;
     for (blob_id, name, key, content_type) in sizes {
         if let Some(stream) = state.storage.get_stream(&key).await? {
-            return Ok(Some((stream, content_type)));
+            return Ok(Some((stream, content_type, name == variant.name())));
         }
         if let Some(lost) = Variant::from_name(&name) {
             forget_missing(state, blob_id, lost).await?;

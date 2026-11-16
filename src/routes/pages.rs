@@ -121,16 +121,19 @@ pub async fn stored_image(
     if !storage::is_valid_key(&key) {
         return Err(AppError::NotFound);
     }
-    let (stream, content_type) = images::variant(&state, &key, variant)
+    let (stream, content_type, exact) = images::variant(&state, &key, variant)
         .await?
         .ok_or(AppError::NotFound)?;
+    // A stand-in for a missing size is only cached briefly, so the real one shows once remade.
+    let cache = if exact {
+        "public, max-age=31536000, immutable"
+    } else {
+        "public, max-age=300"
+    };
     Ok((
         [
             (header::CONTENT_TYPE, content_type),
-            (
-                header::CACHE_CONTROL,
-                "public, max-age=31536000, immutable".to_string(),
-            ),
+            (header::CACHE_CONTROL, cache.to_string()),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
             (
                 header::CONTENT_SECURITY_POLICY,

@@ -145,8 +145,9 @@ store. It works much like Rails' ActiveStorage:
   another stored size of the picture is served in its place, and the worker downloads the
   picture again from the wishes' own addresses to remake it, but only if an address still serves
   the very same picture. Nothing ever moves to a different picture (a dead product link often
-  serves a placeholder), so the sizes that survived keep being served. Page requests never decode
-  anything and never redirect elsewhere.
+  serves a placeholder), so the sizes that survived keep being served. If no size survives, the
+  wishes fall back to the original address and the picture is downloaded again like a new one.
+  Page requests never decode anything and never redirect elsewhere.
 - Pictures existing before this feature are picked up by the same worker on startup.
 
 To add a size, add a `Variant` in `src/images.rs`. The worker downloads stored pictures again to

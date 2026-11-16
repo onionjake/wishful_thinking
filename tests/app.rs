@@ -1777,6 +1777,29 @@ async fn large_pictures_are_resized_and_cleaned_up_with_their_wish() {
             .is_some());
     }
 
+    // If every size is lost, pages fall back to the store's address and the picture is
+    // downloaded again like a new one.
+    for name in ["card", "thumb"] {
+        state
+            .storage
+            .delete(&format!("{key}-{name}"))
+            .await
+            .unwrap();
+    }
+    assert_eq!(get(card.clone()).await.0, StatusCode::NOT_FOUND);
+    let fallback = c.get(&format!("/lists/{list_id}")).await.body;
+    assert!(
+        fallback.contains(&format!("src=\"{poster}\"")),
+        "falls back"
+    );
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(get(card.clone()).await.0, StatusCode::OK);
+
     // A stray file with no blob behind it is swept away; stored pictures are left alone.
     let stray = "ab".repeat(32);
     state.storage.put(&stray, b"junk".to_vec()).await.unwrap();
