@@ -171,16 +171,13 @@ pub async fn confirm_missing(state: &AppState) -> anyhow::Result<usize> {
     Ok(forgotten)
 }
 
-/// Forget every stored picture, so each wish shows its original address and downloads it again
-/// (with fresh attempts, including pictures that never got stored), and pair the database with
-/// `storage` as it is now. For when the store was really lost or
+/// Forget every stored picture, so each wish shows its original address and downloads it again,
+/// and pair the database with `storage` as it is now. For when the store was really lost or
 /// replaced (`wishful_thinking reset-pictures`).
 pub async fn reset_all(db: &crate::db::Db, storage: &storage::Storage) -> anyhow::Result<u64> {
     let mut tx = db.begin().await?;
     let mut detached = 0;
     for table in TABLES {
-        // Every picture, stored or not, gets a fresh set of attempts: this is also the way back
-        // after an outage long enough to use them all up.
         detached += sqlx::query(&format!(
             "UPDATE {table} SET image_blob_id = NULL, image_attempts = 0, image_attempted_at = NULL
               WHERE image_url IS NOT NULL"
@@ -193,6 +190,28 @@ pub async fn reset_all(db: &crate::db::Db, storage: &storage::Storage) -> anyhow
     tx.commit().await?;
     storage::pair(db, storage).await?;
     Ok(detached)
+}
+
+/// Give every picture still waiting to be stored, and every stored picture waiting for a lost
+/// size, a fresh set of attempts. Stored pictures are untouched. For after an outage long enough
+/// to use the attempts up (`wishful_thinking retry-pictures`).
+pub async fn retry_all(db: &crate::db::Db) -> anyhow::Result<u64> {
+    let mut tx = db.begin().await?;
+    let mut reset = 0;
+    for table in TABLES {
+        reset += sqlx::query(&format!(
+            "UPDATE {table} SET image_attempts = 0, image_attempted_at = NULL
+              WHERE image_url IS NOT NULL AND image_blob_id IS NULL AND image_attempts > 0"
+        ))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    }
+    sqlx::query("UPDATE blobs SET refetch_attempts = 0, refetch_attempted_at = NULL")
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(reset)
 }
 
 /// A stored size's file is confirmed gone. Forget that size so the worker downloads the picture

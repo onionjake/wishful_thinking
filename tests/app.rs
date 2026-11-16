@@ -1689,6 +1689,32 @@ async fn pictures_are_downloaded_and_served_locally() {
         .unwrap();
     assert_eq!(attempts, 1);
 
+    // `retry-pictures` gives it fresh attempts, leaving stored pictures alone.
+    assert_eq!(
+        wishful_thinking::images::retry_all(&state.db)
+            .await
+            .unwrap(),
+        1
+    );
+    let stored_before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM items WHERE image_blob_id IS NOT NULL")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(stored_before, 1, "the copy keeps its stored picture");
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        0
+    );
+    let attempts: i64 = sqlx::query_scalar("SELECT image_attempts FROM items WHERE id = ?")
+        .bind(item_id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(attempts, 1, "tried again");
+
     // Once no wish uses a picture any more, the purge deletes it.
     let copy_id = item_ids(&copied)[0];
     c.post(&format!("/items/{copy_id}/delete"), &[]).await;
