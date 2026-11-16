@@ -68,7 +68,13 @@ pub fn is_public_ip(ip: IpAddr) -> bool {
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 || (seg[0] & 0xfe00) == 0xfc00 // unique local
-                || (seg[0] & 0xffc0) == 0xfe80) // link local
+                || (seg[0] & 0xffc0) == 0xfe80 // link local
+                // Addresses that embed an IPv4 one, which could be private: IPv4-compatible
+                // ::/96, NAT64 64:ff9b::/96 and 64:ff9b:1::/48, 6to4 2002::/16, Teredo 2001::/32.
+                || seg[..6] == [0; 6]
+                || (seg[0] == 0x64 && seg[1] == 0xff9b)
+                || seg[0] == 0x2002
+                || (seg[0] == 0x2001 && seg[1] == 0))
         }
     }
 }
@@ -148,6 +154,8 @@ pub fn build_client(allow_private: bool) -> reqwest::Client {
         header::HeaderValue::from_static("en-US,en;q=0.9"),
     );
     let mut builder = reqwest::Client::builder()
+        // A proxy from the environment would resolve names itself, bypassing our resolver.
+        .no_proxy()
         .user_agent(USER_AGENT)
         .default_headers(headers)
         .timeout(Duration::from_secs(15))
@@ -208,7 +216,8 @@ pub async fn fetch(client: &reqwest::Client, url: &Url) -> Result<Fetched, Fetch
 pub const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 
 /// The image types we keep, recognised from the file's first bytes rather than the server's
-/// Content-Type (which is often wrong). SVG is deliberately absent: it can carry scripts.
+/// Content-Type (which is often wrong). SVG is deliberately absent: it can carry scripts. So is
+/// AVIF: we can't make page sizes of it without a native decoder.
 pub fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
     let at = |offset: usize, magic: &[u8]| bytes.get(offset..offset + magic.len()) == Some(magic);
     if at(0, b"\xFF\xD8\xFF") {
@@ -219,8 +228,6 @@ pub fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
         Some("image/gif")
     } else if at(0, b"RIFF") && at(8, b"WEBP") {
         Some("image/webp")
-    } else if at(4, b"ftypavif") || at(4, b"ftypavis") {
-        Some("image/avif")
     } else {
         None
     }
@@ -235,8 +242,10 @@ pub async fn fetch_image(
         .get(url.clone())
         .header(
             header::ACCEPT,
-            "image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8",
+            "image/webp,image/png,image/jpeg,image/*;q=0.8",
         )
+        // Pictures download in the background; a slow host shouldn't hold the queue for long.
+        .timeout(Duration::from_secs(10))
         .send()
         .await
         .map_err(map_err)?;
@@ -301,6 +310,10 @@ mod tests {
             "file:///etc/passwd",
             "http://user:pw@example.com/",
             "http://intranet/",
+            "http://[::ffff:10.0.0.1]/",
+            "http://[64:ff9b::a00:1]/",
+            "http://[2002:a00:1::]/",
+            "http://[::a00:1]/",
         ] {
             assert!(
                 validate_url(bad, false).is_err(),
@@ -318,7 +331,7 @@ mod tests {
         assert_eq!(sniff_image(b"\x89PNG\r\n\x1a\n...."), Some("image/png"));
         assert_eq!(sniff_image(b"GIF89a.."), Some("image/gif"));
         assert_eq!(sniff_image(b"RIFF\0\0\0\0WEBPVP8 "), Some("image/webp"));
-        assert_eq!(sniff_image(b"\0\0\0\x1cftypavif"), Some("image/avif"));
+        assert_eq!(sniff_image(b"\0\0\0\x1cftypavif"), None);
         assert_eq!(sniff_image(b"<svg xmlns=..."), None);
         assert_eq!(sniff_image(b"<html>"), None);
         assert_eq!(sniff_image(b""), None);

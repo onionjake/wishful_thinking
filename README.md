@@ -121,20 +121,26 @@ from the store, so they keep working when a store changes its links and viewers'
 contact the store. It works like Rails' ActiveStorage:
 
 - Saving a wish stores the picture's original address (`image_url`) straight away. A background
-  worker then downloads it, checks it's really a JPEG, PNG, GIF, WebP or AVIF (by its bytes, up to
-  10 MB, through the same SSRF-safe client as the importer) and records it in the `blobs` table.
-  Until then, or if all 3 attempts fail (at least an hour apart), pages show the original address.
+  worker then downloads it (4 at a time, 10 s each, up to 10 MB, through the same SSRF-safe client
+  as the importer), checks by its bytes that it's a JPEG, PNG, GIF or WebP, and records it in the
+  `blobs` table. Until then, or if all 3 attempts fail (at least an hour apart), pages show the
+  original address.
+- When it stores a picture, the worker also makes the sizes pages use: `/images/<key>/thumb` (fits
+  160px, for rows) and `/images/<key>/card` (fits 480px, for item cards and list previews), stored
+  beside the original (`blob_variants` table). It applies EXIF rotation. Pictures with
+  transparency stay PNG; the rest become JPEG. A picture already smaller than a size is served as
+  is when re-encoding wouldn't shrink it. Pages never load the full original.
+- Pictures it can't decode, or that are over 8,000 px a side or 160 MB decoded, aren't kept: the
+  wish keeps showing the original address. Only one picture is decoded at a time.
 - Blobs are named by the SHA-256 of their bytes, so a picture shared by copies, saves and gift
   history is stored once and can be cached forever.
-- Pages never load the full original. They ask for a named size: `/images/<key>/thumb` (fits
-  160px, for rows) or `/images/<key>/card` (fits 480px, for item cards and list previews). Each size
-  is made the first time it's requested, then stored next to the original (`blob_variants` table).
-  Pictures with transparency stay PNG; the rest become JPEG. Pictures already small enough, and
-  AVIFs (which we keep but can't decode), are served as they are.
 - Deleting a wish or list, or changing a wish's picture, wakes the worker, which deletes pictures
-  no wish or gift history uses any more, with all their sizes. It also checks hourly. Gift
-  history keeps its picture after the wish is gone.
-- Pictures added before this feature existed are picked up by the same worker on startup.
+  no wish or gift history uses any more, with all their sizes. It also checks hourly, and sweeps
+  away stray files with no blob behind them (from a crash or a failed delete). Gift history keeps
+  its picture after the wish is gone.
+- If a stored file goes missing (say, the database was restored without `storage/`), its pages fall
+  back to the original address and the worker downloads it again; a missing size is remade.
+- Pictures existing before this feature are picked up by the same worker on startup.
 
 The bytes go through the [`object_store`](https://docs.rs/object_store) crate, which also has S3,
 Google Cloud Storage and Azure backends. To move to one, enable its feature in `Cargo.toml` (e.g.
@@ -149,7 +155,11 @@ Back up `storage/` together with the database.
 - The importer blocks private, loopback and link-local addresses (including after DNS resolution and
   redirects), caps response size, and times out slow sites.
 - Stored pictures are checked by their content type (SVG and anything that isn't a known raster
-  format is refused) and served with `nosniff` and a sandboxing CSP.
+  format is refused), decoded within size limits before they're kept, and served with `nosniff`
+  and a sandboxing CSP.
+- `/images/…` needs no sign-in: these are product photos, and public lists show them to anyone.
+  Their addresses are content hashes, so someone who already has a picture's exact bytes could
+  check whether it's stored here, but not which list or person it belongs to.
 - Reservation details are filtered on the server. A list owner's page never contains who reserved what
   unless the list opts in or the giver's chosen reveal month has arrived.
 

@@ -3435,6 +3435,7 @@ dependencies = [
  "axum-extra",
  "base64 0.22.1",
  "bytes",
+ "futures-util",
  "http-body-util",
  "image",
  "object_store",

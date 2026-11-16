@@ -2,8 +2,10 @@
 -- A blob is one stored file, named by the SHA-256 of its bytes, so a picture shared by several
 -- wishes (copies, saves, gift history) is stored once. The bytes live in the configured object
 -- store (local disk by default); this table only records what is there.
+-- AUTOINCREMENT so a purged blob's id is never reused: a stale id held elsewhere can then only
+-- miss, never point at a different picture.
 CREATE TABLE blobs (
-    id           INTEGER PRIMARY KEY,
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
     key          TEXT    NOT NULL UNIQUE,
     content_type TEXT    NOT NULL,
     byte_size    INTEGER NOT NULL,

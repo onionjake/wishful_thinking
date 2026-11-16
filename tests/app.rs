@@ -1482,14 +1482,20 @@ fn urlencode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
-/// A tiny but real PNG (1×1).
-const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0\x1f\x15\xc4\x89\0\0\0\rIDATx\x9cc\xf8\xff\xff?\0\x05\xfe\x02\xfe\xa7\x35\x81\x84\0\0\0\0IEND\xaeB`\x82";
+/// A small real PNG: a flat colour, which PNG stores far smaller than any re-encoding, so the
+/// app serves it as is.
+fn small_png() -> Vec<u8> {
+    let img = image::RgbImage::from_pixel(40, 30, image::Rgb([200, 120, 40]));
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
 
 async fn fake_image_host() -> String {
     let app = Router::new()
         .route(
             "/lamp.png",
-            axum::routing::get(|| async { ([(header::CONTENT_TYPE, "image/png")], PNG) }),
+            axum::routing::get(|| async { ([(header::CONTENT_TYPE, "image/png")], small_png()) }),
         )
         .route(
             "/big.png",
@@ -1571,7 +1577,7 @@ async fn pictures_are_downloaded_and_served_locally() {
         .unwrap()
         .contains("immutable"));
     let body = resp.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(body.as_ref(), PNG);
+    assert_eq!(body.as_ref(), small_png());
     for bad in [
         "/images/../../etc/passwd",
         &format!("/images/{}", "0".repeat(64)),
@@ -1640,10 +1646,10 @@ async fn pictures_are_downloaded_and_served_locally() {
         .unwrap();
     assert_eq!(attempts, 1);
 
-    // Once no wish uses a picture any more, the hourly purge deletes it (after a grace period).
+    // Once no wish uses a picture any more, the purge deletes it.
     let copy_id = item_ids(&copied)[0];
     c.post(&format!("/items/{copy_id}/delete"), &[]).await;
-    let purge = || wishful_thinking::storage::purge_unattached(&state.db, &state.storage);
+    let purge = || wishful_thinking::images::purge_unused(&state);
     assert_eq!(purge().await.unwrap(), 1);
     let resp = app
         .clone()
@@ -1723,11 +1729,46 @@ async fn large_pictures_are_resized_and_cleaned_up_with_their_wish() {
             .is_some());
     }
 
-    // Deleting the wish deletes the picture and every size of it.
+    // A size whose file went missing is made again.
+    state.storage.delete(&format!("{key}-card")).await.unwrap();
+    let (status, _, remade) = get(card.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(image::load_from_memory(&remade).unwrap().width(), 480);
+
+    // A stray file with no blob behind it is swept away; stored pictures are left alone.
+    let stray = "ab".repeat(32);
+    state.storage.put(&stray, b"junk".to_vec()).await.unwrap();
+    let sweep =
+        |min_age| wishful_thinking::storage::sweep_orphans(&state.db, &state.storage, min_age);
+    assert_eq!(
+        sweep(std::time::Duration::from_secs(3600)).await.unwrap(),
+        0,
+        "too new"
+    );
+    assert_eq!(sweep(std::time::Duration::ZERO).await.unwrap(), 1);
+    assert!(state.storage.get(&stray).await.unwrap().is_none());
+    assert!(state.storage.get(&key).await.unwrap().is_some());
+
+    // If the original goes missing, pages fall back to the store's address and the worker
+    // downloads it again.
     let item_id = item_ids(&page)[0];
+    state.storage.delete(&key).await.unwrap();
+    assert_eq!(get(format!("/images/{key}")).await.0, StatusCode::NOT_FOUND);
+    let page = c.get(&format!("/lists/{list_id}")).await.body;
+    assert!(page.contains(&format!("src=\"{poster}\"")), "falls back");
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        1
+    );
+    let page = c.get(&format!("/lists/{list_id}")).await.body;
+    assert_eq!(stored_image_path(&page).as_deref(), Some(card.as_str()));
+
+    // Deleting the wish deletes the picture and every size of it.
     c.post(&format!("/items/{item_id}/delete"), &[]).await;
     assert_eq!(
-        wishful_thinking::storage::purge_unattached(&state.db, &state.storage)
+        wishful_thinking::images::purge_unused(&state)
             .await
             .unwrap(),
         1

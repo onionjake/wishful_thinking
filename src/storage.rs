@@ -129,20 +129,26 @@ pub async fn create_blob(
         .await?)
 }
 
-/// What the image route needs to serve a blob.
-pub async fn content_type(db: &Db, key: &str) -> sqlx::Result<Option<String>> {
-    sqlx::query_scalar("SELECT content_type FROM blobs WHERE key = ?")
+/// A blob's id and content type.
+pub async fn find_blob(db: &Db, key: &str) -> sqlx::Result<Option<(i64, String)>> {
+    sqlx::query_as("SELECT id, content_type FROM blobs WHERE key = ?")
         .bind(key)
         .fetch_optional(db)
         .await
 }
 
 /// Delete blobs nothing points at any more (the wish or list was deleted, or its picture
-/// changed), with their resized variants.
+/// changed), with their files. `derived_keys` names files made from a blob (its resized
+/// variants), which are deleted whether or not anything recorded them.
 ///
 /// Only the picture worker may call this (tests aside): it is also the only thing that creates
-/// blobs, so a blob it has just stored can't be swept away before it is attached.
-pub async fn purge_unattached(db: &Db, storage: &Storage) -> anyhow::Result<usize> {
+/// blobs, so a blob it has just stored can't be swept away before it is attached. A file that
+/// can't be deleted right now is left for [`sweep_orphans`].
+pub async fn purge_unattached(
+    db: &Db,
+    storage: &Storage,
+    derived_keys: impl Fn(&str) -> Vec<String>,
+) -> anyhow::Result<usize> {
     const UNUSED: &str = "NOT EXISTS (SELECT 1 FROM items WHERE image_blob_id = blobs.id)
         AND NOT EXISTS (SELECT 1 FROM gift_history WHERE image_blob_id = blobs.id)";
     let candidates: Vec<(i64, String)> =
@@ -151,12 +157,6 @@ pub async fn purge_unattached(db: &Db, storage: &Storage) -> anyhow::Result<usiz
             .await?;
     let mut purged = 0;
     for (id, key) in candidates {
-        let variants: Vec<String> = sqlx::query_scalar(
-            "SELECT key FROM blob_variants WHERE blob_id = ? AND key IS NOT NULL",
-        )
-        .bind(id)
-        .fetch_all(db)
-        .await?;
         // Checked again in the delete itself, in case something attached it meanwhile.
         // Its variant rows go with it (ON DELETE CASCADE).
         let gone = sqlx::query(&format!("DELETE FROM blobs WHERE id = ? AND {UNUSED}"))
@@ -165,14 +165,48 @@ pub async fn purge_unattached(db: &Db, storage: &Storage) -> anyhow::Result<usiz
             .await?
             .rows_affected();
         if gone == 1 {
-            for variant in variants {
-                storage.delete(&variant).await?;
+            for file in derived_keys(&key).iter().chain([&key]) {
+                if let Err(e) = storage.delete(file).await {
+                    tracing::warn!(file, error = %e, "couldn't delete stored file; the sweep will retry");
+                }
             }
-            storage.delete(&key).await?;
             purged += 1;
         }
     }
     Ok(purged)
+}
+
+/// Delete stored files whose blob no longer exists: left by a failed delete, a crash between
+/// storing a file and recording it, or a resized copy finished just after its blob was purged.
+/// Files are named `<blob key>` or `<blob key>-<variant>`. Files newer than `min_age` are
+/// skipped, as their blob row may be about to be written.
+pub async fn sweep_orphans(
+    db: &Db,
+    storage: &Storage,
+    min_age: std::time::Duration,
+) -> anyhow::Result<usize> {
+    use futures_util::TryStreamExt;
+    let cutoff = time::OffsetDateTime::now_utc().unix_timestamp() - min_age.as_secs() as i64;
+    let mut files = storage.store.list(Some(&storage.prefix));
+    let mut swept = 0;
+    while let Some(meta) = files.try_next().await? {
+        let Some(name) = meta.location.filename() else {
+            continue;
+        };
+        let blob_key = name.get(..64).unwrap_or(name);
+        if !is_valid_key(blob_key) || meta.last_modified.timestamp() > cutoff {
+            continue;
+        }
+        let known: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM blobs WHERE key = ?)")
+            .bind(blob_key)
+            .fetch_one(db)
+            .await?;
+        if !known {
+            storage.store.delete(&meta.location).await?;
+            swept += 1;
+        }
+    }
+    Ok(swept)
 }
 
 /// The URL pages use for a stored image.

@@ -121,15 +121,18 @@ pub async fn stored_image(
     if !storage::is_valid_key(&key) {
         return Err(AppError::NotFound);
     }
-    let content_type = storage::content_type(&state.db, &key)
+    let (blob_id, content_type) = storage::find_blob(&state.db, &key)
         .await?
         .ok_or(AppError::NotFound)?;
-    let bytes = state
+    let Some(bytes) = state
         .storage
         .get(&key)
         .await
         .map_err(|e| AppError::Other(anyhow::anyhow!("reading stored image {key}: {e}")))?
-        .ok_or(AppError::NotFound)?;
+    else {
+        images::forget_missing(&state, blob_id).await?;
+        return Err(AppError::NotFound);
+    };
     Ok(image_response(bytes, content_type))
 }
 

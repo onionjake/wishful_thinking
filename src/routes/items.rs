@@ -475,6 +475,9 @@ pub async fn copy_item(
     .bind(item.id)
     .execute(&state.db)
     .await?;
+    if item.image_url.is_some() && item.image_blob_id.is_none() {
+        state.image_jobs.wake();
+    }
     Ok(redirect_flash(
         &format!("/lists/{}", list.id),
         "ok",
@@ -517,8 +520,9 @@ async fn save_to_own_list(
         ));
     }
     sqlx::query(
+        // The picture may have been purged since `item` was read; then the copy downloads it anew.
         "INSERT INTO items (wishlist_id, title, url, image_url, image_blob_id, price_cents, currency, store, import_source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, (SELECT id FROM blobs WHERE id = ?), ?, ?, ?, ?)",
     )
     .bind(target.id)
     .bind(&item.title)
@@ -535,6 +539,10 @@ async fn save_to_own_list(
         .bind(target.id)
         .execute(&state.db)
         .await?;
+    if item.image_url.is_some() {
+        // In case its picture isn't stored yet, or was purged since `item` was read.
+        state.image_jobs.wake();
+    }
     Ok(redirect_flash(
         back,
         "ok",
