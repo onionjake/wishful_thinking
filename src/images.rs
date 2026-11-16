@@ -250,7 +250,7 @@ pub async fn variant(
     .bind(blob_id)
     .bind(variant.name())
     .bind(&key)
-    .bind(&content_type)
+    .bind(content_type)
     .bind(size)
     .execute(&state.db)
     .await?;
