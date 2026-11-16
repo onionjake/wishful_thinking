@@ -116,31 +116,37 @@ cargo run --example import -- https://www.allbirds.com/products/mens-tree-runner
 
 ## Stored pictures
 
-Wish pictures are downloaded and served from the app (`/images/<key>`) instead of being hotlinked
-from the store, so they keep working when a store changes its links and viewers' browsers don't
-contact the store. It works like Rails' ActiveStorage:
+Wish pictures are downloaded and served from the app instead of being hotlinked from the store,
+so they keep working when a store changes its links and viewers' browsers don't contact the
+store. It works much like Rails' ActiveStorage:
 
 - Saving a wish stores the picture's original address (`image_url`) straight away. A background
   worker then downloads it (4 at a time, 10 s each, up to 10 MB, through the same SSRF-safe client
-  as the importer), checks by its bytes that it's a JPEG, PNG, GIF or WebP, and records it in the
-  `blobs` table. Until then, or if all 3 attempts fail (at least an hour apart), pages show the
-  original address.
-- When it stores a picture, the worker also makes the sizes pages use: `/images/<key>/thumb` (fits
-  160px, for rows) and `/images/<key>/card` (fits 480px, for item cards and list previews), stored
-  beside the original (`blob_variants` table). It applies EXIF rotation. Pictures with
-  transparency stay PNG; the rest become JPEG. A picture already smaller than a size is served as
-  is when re-encoding wouldn't shrink it. Pages never load the full original.
-- Pictures it can't decode, or that are over 8,000 px a side or 160 MB decoded, aren't kept: the
-  wish keeps showing the original address. Only one picture is decoded at a time.
-- Blobs are named by the SHA-256 of their bytes, so a picture shared by copies, saves and gift
-  history is stored once and can be cached forever.
+  as the importer, taking turns between people so no one can hold up everyone else) and checks by
+  its bytes that it's a JPEG, PNG, GIF or WebP. Until it's stored, or if all 3 attempts fail (at
+  least an hour apart), pages show the original address. Problems on our side (disk, database)
+  don't use up attempts.
+- The worker decodes the picture (one at a time, applying EXIF rotation) and stores the two sizes
+  pages use: `/images/<key>/thumb` (fits 160px, for rows) and `/images/<key>/card` (fits 480px,
+  for item cards and list previews). Pictures with transparency stay PNG; the rest become JPEG,
+  unless the original is already smaller. **The full original isn't kept**: pages never show it,
+  and keeping only small sizes bounds what each picture can cost on disk. The `blobs` table
+  records the original's hash, type and source address; `blob_variants` records the sizes.
+- Pictures it can't decode, or that are over 6,000 px a side or 96 MB decoded, aren't kept: the
+  wish keeps showing the original address.
+- Blobs are named by the SHA-256 of the original, so a picture shared by copies, saves and gift
+  history is stored once and can be cached forever. Files are streamed, not loaded whole.
 - Deleting a wish or list, or changing a wish's picture, wakes the worker, which deletes pictures
-  no wish or gift history uses any more, with all their sizes. It also checks hourly, and sweeps
-  away stray files with no blob behind them (from a crash or a failed delete). Gift history keeps
-  its picture after the wish is gone.
-- If a stored file goes missing (say, the database was restored without `storage/`), its pages fall
-  back to the original address and the worker downloads it again; a missing size is remade.
+  no wish or gift history uses any more, with all their sizes. It also checks hourly, and hourly
+  sweeps away stray files with no blob behind them (from a crash or a failed delete). Gift
+  history keeps its picture after the wish is gone.
+- If a stored file goes missing (say, the database was restored without `storage/`), its pages
+  fall back to the original address and the worker downloads it again. Page requests never decode
+  anything.
 - Pictures existing before this feature are picked up by the same worker on startup.
+
+To add a size, add a `Variant` in `src/images.rs`. Pictures stored before then don't have it;
+clearing `image_blob_id` (and `image_attempts`) makes the worker download them again.
 
 The bytes go through the [`object_store`](https://docs.rs/object_store) crate, which also has S3,
 Google Cloud Storage and Azure backends. To move to one, enable its feature in `Cargo.toml` (e.g.
@@ -157,6 +163,11 @@ Back up `storage/` together with the database.
 - Stored pictures are checked by their content type (SVG and anything that isn't a known raster
   format is refused), decoded within size limits before they're kept, and served with `nosniff`
   and a sandboxing CSP.
+- The importer and picture downloader ignore `HTTP(S)_PROXY`: a proxy would resolve addresses
+  itself and get round the check that refuses private ones. A deployment that can only reach the
+  internet through a proxy can't import from URLs.
+- There is no limit on how many wishes (and so pictures) an account can add. Each stored picture
+  costs well under 1 MB (its two sizes); if that matters for an open-signup server, add a quota.
 - `/images/…` needs no sign-in: these are product photos, and public lists show them to anyone.
   Their addresses are content hashes, so someone who already has a picture's exact bytes could
   check whether it's stored here, but not which list or person it belongs to.

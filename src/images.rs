@@ -15,7 +15,7 @@
 //! [`MAX_ATTEMPTS`] times, at least an hour apart.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use image::codecs::jpeg::JpegEncoder;
@@ -31,6 +31,14 @@ use crate::AppState;
 pub const MAX_ATTEMPTS: i64 = 3;
 /// Tables with an `image_url` whose picture should be kept.
 const TABLES: [&str; 2] = ["items", "gift_history"];
+
+/// Who a row's picture belongs to, so downloads take turns between people (`t` is the row).
+fn owner_of(table: &str) -> &'static str {
+    match table {
+        "items" => "(SELECT owner_id FROM wishlists WHERE id = t.wishlist_id)",
+        _ => "t.buyer_id",
+    }
+}
 const BATCH: i64 = 20;
 const DOWNLOADS_AT_ONCE: usize = 4;
 
@@ -48,8 +56,8 @@ impl ImageJobs {
 /// sleeps until woken by a save, or for an hour (to retry failures and purge unused files).
 pub fn spawn_worker(state: AppState) {
     tokio::spawn(async move {
-        // Look for stray files at startup and then on each hourly (unprompted) pass.
-        let mut sweep = true;
+        // Look for stray files at startup and then at most hourly, however often we're woken.
+        let mut last_sweep: Option<Instant> = None;
         loop {
             // Purge first: it's quick, and shouldn't wait behind a long download queue.
             match purge_unused(&state).await {
@@ -57,12 +65,23 @@ pub fn spawn_worker(state: AppState) {
                 Ok(n) => tracing::info!(purged = n, "deleted unused pictures"),
                 Err(e) => tracing::warn!(error = %e, "picture purge failed"),
             }
-            match store_pending(&state).await {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(stored = n, "stored wish pictures"),
-                Err(e) => tracing::warn!(error = %e, "picture download pass failed"),
-            }
-            if sweep {
+            // Download in slices of a minute or so, so a long backlog (the first start after
+            // this feature shipped, say) doesn't hold up purges.
+            let more = match store_due(&state, Some(Instant::now() + Duration::from_secs(60))).await
+            {
+                Ok((stored, more)) => {
+                    if stored > 0 {
+                        tracing::info!(stored, "stored wish pictures");
+                    }
+                    more
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "picture download pass failed");
+                    false
+                }
+            };
+            if last_sweep.is_none_or(|t| t.elapsed() >= Duration::from_secs(3600)) {
+                last_sweep = Some(Instant::now());
                 match storage::sweep_orphans(&state.db, &state.storage, Duration::from_secs(3600))
                     .await
                 {
@@ -71,9 +90,11 @@ pub fn spawn_worker(state: AppState) {
                     Err(e) => tracing::warn!(error = %e, "stray picture sweep failed"),
                 }
             }
-            sweep = tokio::time::timeout(Duration::from_secs(3600), state.image_jobs.0.notified())
-                .await
-                .is_err();
+            if !more {
+                let _ =
+                    tokio::time::timeout(Duration::from_secs(3600), state.image_jobs.0.notified())
+                        .await;
+            }
         }
     });
 }
@@ -87,8 +108,10 @@ pub async fn purge_unused(state: &AppState) -> anyhow::Result<usize> {
     .await
 }
 
-/// A blob's file is gone (storage restored without it, or deleted by hand). Forget the blob so
-/// pages fall back to the original address and the worker downloads the picture again.
+/// A blob's file is gone (storage restored without it, or deleted by hand). Detach it so pages
+/// fall back to the original address and the worker downloads the picture again. The blob row
+/// itself is left for the worker's purge: only the worker deletes blobs, so it can never be
+/// attaching one that a page request just deleted.
 pub async fn forget_missing(state: &AppState, blob_id: i64) -> anyhow::Result<()> {
     tracing::warn!(
         blob_id,
@@ -104,10 +127,6 @@ pub async fn forget_missing(state: &AppState, blob_id: i64) -> anyhow::Result<()
         .execute(&mut *tx)
         .await?;
     }
-    sqlx::query("DELETE FROM blobs WHERE id = ?")
-        .bind(blob_id)
-        .execute(&mut *tx)
-        .await?;
     tx.commit().await?;
     state.image_jobs.wake();
     Ok(())
@@ -116,14 +135,34 @@ pub async fn forget_missing(state: &AppState, blob_id: i64) -> anyhow::Result<()
 /// Download every picture that is due, returning how many were stored. Tests call this directly
 /// instead of running the worker.
 pub async fn store_pending(state: &AppState) -> anyhow::Result<usize> {
+    let mut total = 0;
+    loop {
+        let (stored, more) = store_due(state, None).await?;
+        total += stored;
+        if !more {
+            return Ok(total);
+        }
+    }
+}
+
+/// Download pictures that are due until none are left or `deadline` passes. Returns how many
+/// were stored and whether more are waiting. A problem with one picture never stops the rest.
+async fn store_due(state: &AppState, deadline: Option<Instant>) -> anyhow::Result<(usize, bool)> {
     let mut stored = 0;
     for table in TABLES {
         loop {
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                return Ok((stored, true));
+            }
+            // Take turns between people: everyone's first picture, then everyone's second, and
+            // so on, so one person adding thousands of wishes can't hold up everyone else's.
+            let owner = owner_of(table);
             let due: Vec<(i64, String)> = sqlx::query_as(&format!(
-                "SELECT id, image_url FROM {table}
-                  WHERE image_url IS NOT NULL AND image_blob_id IS NULL AND image_attempts < ?
-                    AND (image_attempted_at IS NULL OR image_attempted_at < datetime('now', '-1 hour'))
-                  ORDER BY id LIMIT ?"
+                "SELECT t.id, t.image_url FROM {table} t
+                  WHERE t.image_url IS NOT NULL AND t.image_blob_id IS NULL AND t.image_attempts < ?
+                    AND (t.image_attempted_at IS NULL OR t.image_attempted_at < datetime('now', '-1 hour'))
+                  ORDER BY ROW_NUMBER() OVER (PARTITION BY {owner} ORDER BY t.id), t.id
+                  LIMIT ?"
             ))
             .bind(MAX_ATTEMPTS)
             .bind(BATCH)
@@ -133,34 +172,74 @@ pub async fn store_pending(state: &AppState) -> anyhow::Result<usize> {
                 break;
             }
             // A few at a time, so one slow store doesn't hold up everyone else's pictures.
-            let results: Vec<anyhow::Result<bool>> = futures_util::stream::iter(due)
+            stored += futures_util::stream::iter(due)
                 .map(|(id, url)| async move { store_one(state, table, id, &url).await })
                 .buffer_unordered(DOWNLOADS_AT_ONCE)
-                .collect()
+                .filter(|&ok| std::future::ready(ok))
+                .count()
                 .await;
-            for result in results {
-                if result? {
-                    stored += 1;
-                }
-            }
         }
     }
-    Ok(stored)
+    Ok((stored, false))
 }
 
-async fn store_one(state: &AppState, table: &str, id: i64, url: &str) -> anyhow::Result<bool> {
+/// Why a picture wasn't stored.
+enum NotStored {
+    /// The picture's fault (unreachable, not an image, too big): counts as a failed attempt.
+    Picture,
+    /// Ours (storage or database trouble): retried in an hour without using up an attempt.
+    Ours(anyhow::Error),
+}
+
+impl From<anyhow::Error> for NotStored {
+    fn from(e: anyhow::Error) -> Self {
+        NotStored::Ours(e)
+    }
+}
+
+impl From<sqlx::Error> for NotStored {
+    fn from(e: sqlx::Error) -> Self {
+        NotStored::Ours(e.into())
+    }
+}
+
+/// Try to store one row's picture, returning whether it was stored.
+async fn store_one(state: &AppState, table: &str, id: i64, url: &str) -> bool {
     // Count the attempt first, so a picture that crashes or hangs the download isn't retried
     // in a tight loop. The `image_url = ?` guards here and below skip rows whose picture was
     // changed while we worked; the new address gets its own turn.
-    sqlx::query(&format!(
+    let counted = sqlx::query(&format!(
         "UPDATE {table} SET image_attempts = image_attempts + 1, image_attempted_at = datetime('now')
           WHERE id = ? AND image_url = ?"
     ))
     .bind(id)
     .bind(url)
     .execute(&state.db)
-    .await?;
+    .await;
+    if let Err(e) = counted {
+        tracing::warn!(table, id, error = %e, "couldn't start picture download");
+        return false;
+    }
+    match try_store(state, table, id, url).await {
+        Ok(attached) => attached,
+        Err(NotStored::Picture) => false,
+        Err(NotStored::Ours(e)) => {
+            tracing::warn!(table, id, url, error = %e, "couldn't store picture; will retry");
+            // Give the attempt back; image_attempted_at still holds the retry off for an hour.
+            let _ = sqlx::query(&format!(
+                "UPDATE {table} SET image_attempts = image_attempts - 1
+                  WHERE id = ? AND image_url = ? AND image_attempts > 0"
+            ))
+            .bind(id)
+            .bind(url)
+            .execute(&state.db)
+            .await;
+            false
+        }
+    }
+}
 
+async fn try_store(state: &AppState, table: &str, id: i64, url: &str) -> Result<bool, NotStored> {
     // The same address is often already stored (a copied wish, a gift bought from a list).
     let known: Option<i64> = sqlx::query_scalar(
         "SELECT image_blob_id FROM items WHERE image_url = ?1 AND image_blob_id IS NOT NULL
@@ -178,36 +257,30 @@ async fn store_one(state: &AppState, table: &str, id: i64, url: &str) -> anyhow:
                 Ok(downloaded) => downloaded,
                 Err(e) => {
                     tracing::debug!(table, id, url, error = %e, "couldn't download picture");
-                    return Ok(false);
+                    return Err(NotStored::Picture);
                 }
             };
             // Only keep pictures we can make page sizes of; anything else stays hotlinked.
-            let bytes = bytes::Bytes::from(bytes);
-            let variants = match make_variants_queued(bytes.clone()).await {
+            // The original itself isn't kept (pages never show it, and it can be large): the
+            // blob records its hash and source, and its sizes are stored.
+            let key = storage::content_key(&bytes);
+            let size = bytes.len();
+            let variants = match make_variants_queued(bytes, content_type).await {
                 Ok(variants) => variants,
                 Err(e) => {
                     tracing::info!(table, id, url, error = %e, "not keeping picture");
-                    return Ok(false);
+                    return Err(NotStored::Picture);
                 }
             };
-            let blob_id = storage::create_blob(
-                &state.db,
-                &state.storage,
-                bytes.to_vec(),
-                content_type,
-                Some(url),
-            )
-            .await?;
-            let key: String = sqlx::query_scalar("SELECT key FROM blobs WHERE id = ?")
-                .bind(blob_id)
-                .fetch_one(&state.db)
-                .await?;
+            let blob_id =
+                storage::record_blob(&state.db, &key, content_type, size, Some(url)).await?;
             save_variants(state, blob_id, &key, variants).await?;
             blob_id
         }
     };
     let attached = sqlx::query(&format!(
-        "UPDATE {table} SET image_blob_id = ? WHERE id = ? AND image_url = ?"
+        "UPDATE {table} SET image_blob_id = ?1 WHERE id = ?2 AND image_url = ?3
+            AND EXISTS (SELECT 1 FROM blobs WHERE id = ?1)"
     ))
     .bind(blob_id)
     .bind(id)
@@ -258,21 +331,25 @@ pub fn variant_path(blob_key: &str, variant: Variant) -> String {
     format!("{}/{}", storage::image_path(blob_key), variant.name())
 }
 
-/// Decoding is the expensive part (a large photo can take a second and a few hundred MB), so
-/// only one picture is decoded at a time, whether by the worker or a page request.
+/// Decoding is the expensive part (a large photo can take a second and around a hundred MB), so
+/// only one picture is decoded at a time.
 static DECODE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
-/// Largest picture we keep, in pixels per side and in decoded bytes. Anything bigger is left
-/// hotlinked rather than stored.
-const MAX_SIDE: u32 = 8_000;
-const MAX_DECODED_BYTES: u64 = 160 * 1024 * 1024;
+/// Largest picture we keep, in pixels per side and in decoded bytes (about 24 megapixels with
+/// transparency, 32 without). Anything bigger is left hotlinked rather than stored.
+const MAX_SIDE: u32 = 6_000;
+const MAX_DECODED_BYTES: u64 = 96 * 1024 * 1024;
 
-/// One resized copy: its bytes and type, or `None` to serve the original as is.
-type Resized = Option<(Vec<u8>, &'static str)>;
+/// One stored size: its bytes and content type.
+type Resized = (Vec<u8>, &'static str);
 
 /// Decode a picture once and make every [`Variant`] of it. Fails if it isn't a picture we can
 /// decode within the limits, which is how the worker decides whether to keep it at all.
-pub fn make_variants(bytes: &[u8]) -> anyhow::Result<Vec<(Variant, Resized)>> {
+/// `content_type` is the original's, used when it is already the smallest form of a size.
+pub fn make_variants(
+    bytes: &[u8],
+    content_type: &'static str,
+) -> anyhow::Result<Vec<(Variant, Resized)>> {
     use image::ImageDecoder;
     let mut reader = ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
     // Guard against "decompression bombs": tiny files that claim enormous dimensions.
@@ -302,12 +379,17 @@ pub fn make_variants(bytes: &[u8]) -> anyhow::Result<Vec<(Variant, Resized)>> {
             img = img.resize(max, max, FilterType::Lanczos3);
         }
         let encoded = encode(&img)?;
-        // Keep the original when it's no bigger and needs no turning; the variant's job is to
-        // be small.
+        // Use the original's own bytes when they're already this size, the right way up, and
+        // smaller than re-encoding. Either way a size is never bigger than its re-encoding.
         let keep_original = as_stored
             && (img.width(), img.height()) == original_size
             && encoded.0.len() >= bytes.len();
-        out.push((variant, (!keep_original).then_some(encoded)));
+        let sized = if keep_original {
+            (bytes.to_vec(), content_type)
+        } else {
+            encoded
+        };
+        out.push((variant, sized));
     }
     Ok(out)
 }
@@ -331,10 +413,18 @@ fn encode(img: &DynamicImage) -> anyhow::Result<(Vec<u8>, &'static str)> {
     Ok((out, content_type))
 }
 
-/// Decode `bytes` and make its variants, one picture at a time across the whole server.
-async fn make_variants_queued(bytes: bytes::Bytes) -> anyhow::Result<Vec<(Variant, Resized)>> {
-    let _turn = DECODE.acquire().await?;
-    tokio::task::spawn_blocking(move || make_variants(&bytes)).await?
+/// Decode `bytes` and make its variants, one picture at a time across the whole server. The
+/// turn is held inside the blocking task, so it lasts exactly as long as the decode does.
+async fn make_variants_queued(
+    bytes: Vec<u8>,
+    content_type: &'static str,
+) -> anyhow::Result<Vec<(Variant, Resized)>> {
+    let turn = DECODE.acquire().await?;
+    tokio::task::spawn_blocking(move || {
+        let _turn = turn;
+        make_variants(&bytes, content_type)
+    })
+    .await?
 }
 
 /// Store a blob's variants and record them. Skipped quietly if the blob was purged meanwhile:
@@ -345,16 +435,10 @@ async fn save_variants(
     blob_key: &str,
     variants: Vec<(Variant, Resized)>,
 ) -> anyhow::Result<()> {
-    for (variant, resized) in variants {
-        let (key, content_type, size) = match resized {
-            Some((bytes, content_type)) => {
-                let key = variant.storage_key(blob_key);
-                let size = bytes.len() as i64;
-                state.storage.put(&key, bytes).await?;
-                (Some(key), Some(content_type), Some(size))
-            }
-            None => (None, None, None),
-        };
+    for (variant, (bytes, content_type)) in variants {
+        let key = variant.storage_key(blob_key);
+        let size = bytes.len() as i64;
+        state.storage.put(&key, bytes).await?;
         sqlx::query(
             "INSERT INTO blob_variants (blob_id, name, key, content_type, byte_size)
              SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM blobs WHERE id = ?1)
@@ -372,52 +456,33 @@ async fn save_variants(
     Ok(())
 }
 
-/// A stored picture at the requested size, as (bytes, content type). `None` if the blob isn't
-/// stored. The worker makes every size when it stores a picture; this only has to make one again
-/// if its file has gone missing.
+/// A stored picture at the requested size, as a stream of its bytes and its content type, or
+/// `None` if there isn't one. Page requests never decode anything: if a size's file has gone
+/// missing, the picture is detached and the worker downloads it again.
 pub async fn variant(
     state: &AppState,
     blob_key: &str,
     variant: Variant,
-) -> anyhow::Result<Option<(bytes::Bytes, String)>> {
-    let Some((blob_id, original_type)) = storage::find_blob(&state.db, blob_key).await? else {
+) -> anyhow::Result<Option<(storage::ByteStream, String)>> {
+    let found: Option<(i64, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT b.id, v.key, v.content_type FROM blobs b
+           LEFT JOIN blob_variants v ON v.blob_id = b.id AND v.name = ?
+          WHERE b.key = ?",
+    )
+    .bind(variant.name())
+    .bind(blob_key)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some((blob_id, key, content_type)) = found else {
         return Ok(None);
     };
-    let mut remade = false;
-    loop {
-        let made: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT key, content_type FROM blob_variants WHERE blob_id = ? AND name = ?",
-        )
-        .bind(blob_id)
-        .bind(variant.name())
-        .fetch_optional(&state.db)
-        .await?;
-        if let Some((Some(key), Some(content_type))) = &made {
-            if let Some(bytes) = state.storage.get(key).await? {
-                return Ok(Some((bytes, content_type.clone())));
-            }
+    if let (Some(key), Some(content_type)) = (key, content_type) {
+        if let Some(stream) = state.storage.get_stream(&key).await? {
+            return Ok(Some((stream, content_type)));
         }
-        let Some(original) = state.storage.get(blob_key).await? else {
-            forget_missing(state, blob_id).await?;
-            return Ok(None);
-        };
-        if matches!(made, Some((None, _))) || remade {
-            // Recorded as "serve the original as is" (or remaking didn't produce a file).
-            return Ok(Some((original, original_type)));
-        }
-        // The size is missing. Remake every size; if another request is already doing so, this
-        // waits its turn and then finds the files on the next pass round the loop.
-        let variants = match make_variants_queued(original).await {
-            Ok(variants) => variants,
-            Err(e) => {
-                tracing::warn!(blob_key, error = %e, "couldn't remake picture sizes");
-                remade = true;
-                continue;
-            }
-        };
-        save_variants(state, blob_id, blob_key, variants).await?;
-        remade = true;
     }
+    forget_missing(state, blob_id).await?;
+    Ok(None)
 }
 
 /// Whether any pixel is see-through (many PNGs have an alpha channel but use none of it).
@@ -448,24 +513,21 @@ mod tests {
         DynamicImage::ImageRgba8(img)
     }
 
-    /// The picture at one size, decoded, with its type (`None` = the original as is).
-    fn sized(bytes: &[u8], want: Variant) -> (DynamicImage, Option<&'static str>) {
-        let (_, resized) = make_variants(bytes)
+    /// The picture at one size, decoded, with its type.
+    fn sized(bytes: &[u8], want: Variant) -> (DynamicImage, &'static str) {
+        let (_, (out, ct)) = make_variants(bytes, "image/png")
             .unwrap()
             .into_iter()
             .find(|(v, _)| *v == want)
             .unwrap();
-        match resized {
-            Some((out, ct)) => (image::load_from_memory(&out).unwrap(), Some(ct)),
-            None => (image::load_from_memory(bytes).unwrap(), None),
-        }
+        (image::load_from_memory(&out).unwrap(), ct)
     }
 
     #[test]
     fn shrinks_large_pictures_keeping_shape() {
         let big = encode(noisy(1200, 600, false), image::ImageFormat::Png);
         let (card, ct) = sized(&big, Variant::Card);
-        assert_eq!(ct, Some("image/jpeg"), "opaque pictures become JPEG");
+        assert_eq!(ct, "image/jpeg", "opaque pictures become JPEG");
         assert_eq!((card.width(), card.height()), (480, 240));
         let (thumb, _) = sized(&big, Variant::Thumb);
         assert_eq!((thumb.width(), thumb.height()), (160, 80));
@@ -475,7 +537,7 @@ mod tests {
     fn keeps_transparency() {
         let big = encode(noisy(800, 800, true), image::ImageFormat::Png);
         let (img, ct) = sized(&big, Variant::Thumb);
-        assert_eq!(ct, Some("image/png"));
+        assert_eq!(ct, "image/png");
         assert_eq!((img.width(), img.height()), (160, 160));
         assert!(img.to_rgba8().pixels().any(|p| p.0[3] == 0));
     }
@@ -491,9 +553,9 @@ mod tests {
 
     #[test]
     fn refuses_what_it_cant_or_shouldnt_decode() {
-        assert!(make_variants(b"not a picture").is_err());
+        assert!(make_variants(b"not a picture", "image/png").is_err());
         let too_wide = encode(noisy(MAX_SIDE + 1, 2, false), image::ImageFormat::Png);
-        assert!(make_variants(&too_wide).is_err());
+        assert!(make_variants(&too_wide, "image/png").is_err());
     }
 
     #[test]

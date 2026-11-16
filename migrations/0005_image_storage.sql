@@ -1,7 +1,8 @@
 -- Pictures are downloaded and kept, rather than hotlinked from the store.
--- A blob is one stored file, named by the SHA-256 of its bytes, so a picture shared by several
--- wishes (copies, saves, gift history) is stored once. The bytes live in the configured object
--- store (local disk by default); this table only records what is there.
+-- A blob is one downloaded picture, named by the SHA-256 of its bytes, so a picture shared by
+-- several wishes (copies, saves, gift history) is stored once. Only its resized copies are kept
+-- (blob_variants), in the configured object store (local disk by default); content_type and
+-- byte_size describe the original as downloaded.
 -- AUTOINCREMENT so a purged blob's id is never reused: a stale id held elsewhere can then only
 -- miss, never point at a different picture.
 CREATE TABLE blobs (

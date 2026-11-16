@@ -1658,7 +1658,12 @@ async fn pictures_are_downloaded_and_served_locally() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     let key = src.trim_start_matches("/images/").trim_end_matches("/card");
-    assert!(state.storage.get(key).await.unwrap().is_none());
+    assert!(state
+        .storage
+        .get(&format!("{key}-card"))
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -1713,9 +1718,9 @@ async fn large_pictures_are_resized_and_cleaned_up_with_their_wish() {
     let (_, _, thumb) = get(format!("/images/{key}/thumb")).await;
     let img = image::load_from_memory(&thumb).unwrap();
     assert_eq!((img.width(), img.height()), (160, 80));
-    let (status, _, original) = get(format!("/images/{key}")).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(image::load_from_memory(&original).unwrap().width(), 1200);
+    // The full original isn't kept or served.
+    assert_eq!(get(format!("/images/{key}")).await.0, StatusCode::NOT_FOUND);
+    assert!(state.storage.get(&key).await.unwrap().is_none());
     assert_eq!(
         get(format!("/images/{key}/huge")).await.0,
         StatusCode::NOT_FOUND
@@ -1729,12 +1734,6 @@ async fn large_pictures_are_resized_and_cleaned_up_with_their_wish() {
             .is_some());
     }
 
-    // A size whose file went missing is made again.
-    state.storage.delete(&format!("{key}-card")).await.unwrap();
-    let (status, _, remade) = get(card.clone()).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(image::load_from_memory(&remade).unwrap().width(), 480);
-
     // A stray file with no blob behind it is swept away; stored pictures are left alone.
     let stray = "ab".repeat(32);
     state.storage.put(&stray, b"junk".to_vec()).await.unwrap();
@@ -1747,13 +1746,18 @@ async fn large_pictures_are_resized_and_cleaned_up_with_their_wish() {
     );
     assert_eq!(sweep(std::time::Duration::ZERO).await.unwrap(), 1);
     assert!(state.storage.get(&stray).await.unwrap().is_none());
-    assert!(state.storage.get(&key).await.unwrap().is_some());
+    assert!(state
+        .storage
+        .get(&format!("{key}-card"))
+        .await
+        .unwrap()
+        .is_some());
 
-    // If the original goes missing, pages fall back to the store's address and the worker
-    // downloads it again.
+    // If a stored size goes missing, pages fall back to the store's address and the worker
+    // downloads the picture again. Page requests never decode anything themselves.
     let item_id = item_ids(&page)[0];
-    state.storage.delete(&key).await.unwrap();
-    assert_eq!(get(format!("/images/{key}")).await.0, StatusCode::NOT_FOUND);
+    state.storage.delete(&format!("{key}-card")).await.unwrap();
+    assert_eq!(get(card.clone()).await.0, StatusCode::NOT_FOUND);
     let page = c.get(&format!("/lists/{list_id}")).await.body;
     assert!(page.contains(&format!("src=\"{poster}\"")), "falls back");
     assert_eq!(
@@ -1764,6 +1768,9 @@ async fn large_pictures_are_resized_and_cleaned_up_with_their_wish() {
     );
     let page = c.get(&format!("/lists/{list_id}")).await.body;
     assert_eq!(stored_image_path(&page).as_deref(), Some(card.as_str()));
+    let (status, _, remade) = get(card.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(image::load_from_memory(&remade).unwrap().width(), 480);
 
     // Deleting the wish deletes the picture and every size of it.
     c.post(&format!("/items/{item_id}/delete"), &[]).await;

@@ -108,35 +108,12 @@ pub async fn icon_maskable_512() -> impl IntoResponse {
     png(include_bytes!("../../static/icon-maskable-512.png"))
 }
 
-/// A stored picture, as stored (`/images/<key>`) or at one of the page sizes
-/// (`/images/<key>/thumb`, `/images/<key>/card`), which are made on first request.
+/// A stored picture at one of the page sizes (`/images/<key>/thumb`, `/images/<key>/card`).
 ///
 /// Keys are content hashes, so a key's bytes never change: cache it forever. Pictures aren't
 /// secret (they're product photos, and public lists show them to anyone), so this needs no
 /// sign-in; the key is unguessable unless you already have the picture.
 pub async fn stored_image(
-    State(state): State<AppState>,
-    axum::extract::Path(key): axum::extract::Path<String>,
-) -> AppResult<Response> {
-    if !storage::is_valid_key(&key) {
-        return Err(AppError::NotFound);
-    }
-    let (blob_id, content_type) = storage::find_blob(&state.db, &key)
-        .await?
-        .ok_or(AppError::NotFound)?;
-    let Some(bytes) = state
-        .storage
-        .get(&key)
-        .await
-        .map_err(|e| AppError::Other(anyhow::anyhow!("reading stored image {key}: {e}")))?
-    else {
-        images::forget_missing(&state, blob_id).await?;
-        return Err(AppError::NotFound);
-    };
-    Ok(image_response(bytes, content_type))
-}
-
-pub async fn stored_image_variant(
     State(state): State<AppState>,
     axum::extract::Path((key, variant)): axum::extract::Path<(String, String)>,
 ) -> AppResult<Response> {
@@ -144,14 +121,10 @@ pub async fn stored_image_variant(
     if !storage::is_valid_key(&key) {
         return Err(AppError::NotFound);
     }
-    let (bytes, content_type) = images::variant(&state, &key, variant)
+    let (stream, content_type) = images::variant(&state, &key, variant)
         .await?
         .ok_or(AppError::NotFound)?;
-    Ok(image_response(bytes, content_type))
-}
-
-fn image_response(bytes: bytes::Bytes, content_type: String) -> Response {
-    (
+    Ok((
         [
             (header::CONTENT_TYPE, content_type),
             (
@@ -164,7 +137,7 @@ fn image_response(bytes: bytes::Bytes, content_type: String) -> Response {
                 "default-src 'none'; sandbox".to_string(),
             ),
         ],
-        bytes,
+        axum::body::Body::from_stream(stream),
     )
-        .into_response()
+        .into_response())
 }

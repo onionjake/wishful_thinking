@@ -17,6 +17,9 @@ use url::Url;
 
 use crate::db::Db;
 
+/// A stored file's contents, read a piece at a time.
+pub type ByteStream = futures_util::stream::BoxStream<'static, object_store::Result<bytes::Bytes>>;
+
 #[derive(Clone)]
 pub struct Storage {
     store: Arc<dyn ObjectStore>,
@@ -74,6 +77,16 @@ impl Storage {
             .map(|_| ())
     }
 
+    /// The file's bytes as a stream, or `None` if it isn't there. Streaming means a slow reader
+    /// holds a small buffer, not the whole file.
+    pub async fn get_stream(&self, key: &str) -> object_store::Result<Option<ByteStream>> {
+        match self.store.get(&self.path(key)).await {
+            Ok(found) => Ok(Some(found.into_stream())),
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// The file's bytes, or `None` if it isn't there.
     pub async fn get(&self, key: &str) -> object_store::Result<Option<bytes::Bytes>> {
         match self.store.get(&self.path(key)).await {
@@ -100,40 +113,33 @@ pub fn is_valid_key(key: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// Store `bytes` and return the id of their blob, reusing the blob if these exact bytes are
-/// already stored.
-pub async fn create_blob(
+/// The key for a file: the lowercase hex SHA-256 of its bytes.
+pub fn content_key(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+/// Record a blob and return its id, reusing the row if this key is already recorded. Files made
+/// from it are stored by the caller under keys starting with `key`.
+pub async fn record_blob(
     db: &Db,
-    storage: &Storage,
-    bytes: Vec<u8>,
+    key: &str,
     content_type: &str,
+    byte_size: usize,
     source_url: Option<&str>,
-) -> anyhow::Result<i64> {
-    let key = format!("{:x}", Sha256::digest(&bytes));
-    let size = bytes.len() as i64;
-    // Write the file before the row, so a row always has its file behind it.
-    storage.put(&key, bytes).await?;
+) -> sqlx::Result<i64> {
     sqlx::query(
         "INSERT INTO blobs (key, content_type, byte_size, source_url) VALUES (?, ?, ?, ?)
          ON CONFLICT(key) DO NOTHING",
     )
-    .bind(&key)
+    .bind(key)
     .bind(content_type)
-    .bind(size)
+    .bind(byte_size as i64)
     .bind(source_url)
     .execute(db)
     .await?;
-    Ok(sqlx::query_scalar("SELECT id FROM blobs WHERE key = ?")
-        .bind(&key)
-        .fetch_one(db)
-        .await?)
-}
-
-/// A blob's id and content type.
-pub async fn find_blob(db: &Db, key: &str) -> sqlx::Result<Option<(i64, String)>> {
-    sqlx::query_as("SELECT id, content_type FROM blobs WHERE key = ?")
+    sqlx::query_scalar("SELECT id FROM blobs WHERE key = ?")
         .bind(key)
-        .fetch_optional(db)
+        .fetch_one(db)
         .await
 }
 
