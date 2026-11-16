@@ -441,13 +441,15 @@ where
 async fn store_one(state: &AppState, table: &str, id: i64, url: &str) -> bool {
     attempt(state, table, "image_", id, Some(url), async {
         // The same address is often already stored (a copied wish, a gift bought from a list).
-        // (Only one with sizes to show.)
+        // Only reuse a recent download with sizes to show: a store may later reuse an address for
+        // a different picture.
         let known: Option<i64> = sqlx::query_scalar(
             "SELECT id FROM blobs b
               WHERE (id IN (SELECT image_blob_id FROM items WHERE image_url = ?1)
                      OR id IN (SELECT image_blob_id FROM gift_history WHERE image_url = ?1))
                 AND EXISTS (SELECT 1 FROM blob_variants v
                              WHERE v.blob_id = b.id AND v.missing_at IS NULL)
+                AND b.created_at > datetime('now', '-7 days')
               LIMIT 1",
         )
         .bind(url)

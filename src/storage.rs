@@ -275,16 +275,6 @@ pub async fn sweep_orphans(
         if !is_valid_key(blob_key) || meta.last_modified.timestamp() > cutoff {
             continue;
         }
-        // A half-written file left by a crash (local storage writes `<name>#<n>`, then renames).
-        if name.contains('#') {
-            match storage.store.delete(&meta.location).await {
-                Ok(()) => swept += 1,
-                Err(e) => {
-                    tracing::warn!(file = %meta.location, error = %e, "couldn't delete stray file")
-                }
-            }
-            continue;
-        }
         let known: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM blobs WHERE key = ?)")
             .bind(blob_key)
             .fetch_one(db)

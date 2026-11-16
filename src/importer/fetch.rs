@@ -64,16 +64,28 @@ pub fn is_public_ip(ip: IpAddr) -> bool {
                 return is_public_ip(IpAddr::V4(v4));
             }
             let seg = v6.segments();
+            // NAT64 (64:ff9b::/96, what DNS64 hands an IPv6-only host for an IPv4-only site) and
+            // 6to4 (2002::/16) embed an IPv4 address: judge that one.
+            let embedded = |hi: u16, lo: u16| {
+                IpAddr::V4(std::net::Ipv4Addr::from(
+                    (u32::from(hi) << 16) | u32::from(lo),
+                ))
+            };
+            if seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                return is_public_ip(embedded(seg[6], seg[7]));
+            }
+            if seg[0] == 0x2002 {
+                return is_public_ip(embedded(seg[1], seg[2]));
+            }
             !(v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 || (seg[0] & 0xfe00) == 0xfc00 // unique local
                 || (seg[0] & 0xffc0) == 0xfe80 // link local
-                // Addresses that embed an IPv4 one, which could be private: IPv4-compatible
-                // ::/96, NAT64 64:ff9b::/96 and 64:ff9b:1::/48, 6to4 2002::/16, Teredo 2001::/32.
+                // Other ways of embedding an IPv4 address that could be private: IPv4-compatible
+                // ::/96, local-use NAT64 64:ff9b:1::/48, Teredo 2001::/32.
                 || seg[..6] == [0; 6]
                 || (seg[0] == 0x64 && seg[1] == 0xff9b)
-                || seg[0] == 0x2002
                 || (seg[0] == 0x2001 && seg[1] == 0))
         }
     }
@@ -323,6 +335,20 @@ mod tests {
         assert!(validate_url("example.com/product", false).is_ok());
         assert!(validate_url("https://www.target.com/p/123", false).is_ok());
         assert!(validate_url("http://127.0.0.1:9000/", true).is_ok());
+    }
+
+    #[test]
+    fn judges_ipv4_embedded_in_ipv6_by_the_ipv4_address() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        // DNS64 on an IPv6-only host: public sites must stay reachable, private ones not.
+        assert!(is_public_ip(ip("64:ff9b::808:808")));
+        assert!(!is_public_ip(ip("64:ff9b::a00:1")));
+        assert!(!is_public_ip(ip("64:ff9b::7f00:1")));
+        assert!(is_public_ip(ip("2002:808:808::1")));
+        assert!(!is_public_ip(ip("2002:c0a8:1::1")));
+        assert!(!is_public_ip(ip("64:ff9b:1::808:808")));
+        assert!(!is_public_ip(ip("2001:0:4136:e378::1")));
+        assert!(is_public_ip(ip("2606:4700:4700::1111")));
     }
 
     #[test]
