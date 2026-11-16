@@ -63,6 +63,7 @@ WT_DATABASE_URL=sqlite:///srv/wishful/data/wishful.db /srv/wishful/wishful_think
 | `WT_LLM_API_KEY` | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | API key |
 | `WT_LLM_BASE_URL` | provider default | Point at a proxy or a local server |
 | `WT_LLM_MODE` | `fallback` | `off`, `fallback` (only when structured data is incomplete) or `always` |
+| `WT_STORAGE_URL` | `storage/` next to the database | Where downloaded pictures are kept: a directory, `file:///path`, or `memory:///` (see *Stored pictures*) |
 | `WT_ALLOW_PRIVATE_FETCH` | off | Let the importer fetch private/loopback addresses. Development only |
 
 ## How URL import works
@@ -113,12 +114,35 @@ Try the importer from the command line:
 cargo run --example import -- https://www.allbirds.com/products/mens-tree-runners
 ```
 
+## Stored pictures
+
+Wish pictures are downloaded and served from the app (`/images/<key>`) instead of being hotlinked
+from the store, so they keep working when a store changes its links and viewers' browsers don't
+contact the store. It works like Rails' ActiveStorage:
+
+- Saving a wish stores the picture's original address (`image_url`) straight away. A background
+  worker then downloads it, checks it's really a JPEG, PNG, GIF, WebP or AVIF (by its bytes, up to
+  10 MB, through the same SSRF-safe client as the importer) and records it in the `blobs` table.
+  Until then, or if all 3 attempts fail (at least an hour apart), pages show the original address.
+- Blobs are named by the SHA-256 of their bytes, so a picture shared by copies, saves and gift
+  history is stored once and can be cached forever. Pictures no wish uses any more are deleted by an
+  hourly purge.
+- Pictures added before this feature existed are picked up by the same worker on startup.
+
+The bytes go through the [`object_store`](https://docs.rs/object_store) crate, which also has S3,
+Google Cloud Storage and Azure backends. To move to one, enable its feature in `Cargo.toml` (e.g.
+`object_store = { version = "0.14", features = ["aws"] }`), set `WT_STORAGE_URL=s3://bucket/prefix`
+and copy the existing `storage/` directory into the bucket. No other code changes are needed.
+Back up `storage/` together with the database.
+
 ## Security notes
 
 - Passwords are hashed with Argon2. Session tokens are 256-bit random and stored as SHA-256 hashes.
 - Cookies are `HttpOnly` and `SameSite=Lax`, and cross-origin form posts are rejected.
 - The importer blocks private, loopback and link-local addresses (including after DNS resolution and
   redirects), caps response size, and times out slow sites.
+- Stored pictures are checked by their content type (SVG and anything that isn't a known raster
+  format is refused) and served with `nosniff` and a sandboxing CSP.
 - Reservation details are filtered on the server. A list owner's page never contains who reserved what
   unless the list opts in or the giver's chosen reveal month has arrived.
 
@@ -141,6 +165,8 @@ src/
   auth.rs             passwords, sessions, flash messages, CSRF check
   routes/             account, lists, items (+ reservations, import API), families, pages
   importer/           fetch (SSRF-safe), extract (structured data), price, llm, amazon_list, orchestration
+  storage.rs          blob storage over object_store (local disk now, cloud later)
+  images.rs           background worker that downloads and keeps wish pictures
   templates.rs        Askama template contexts
 templates/            HTML templates
 static/               CSS, a little progressive-enhancement JS, favicon, app icons, web app manifest, service worker

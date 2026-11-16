@@ -271,6 +271,9 @@ pub async fn create_item(
         .bind(list_id)
         .execute(&state.db)
         .await?;
+    if clean.image_url.is_some() {
+        state.image_jobs.wake();
+    }
     Ok(redirect_flash(
         &format!("/lists/{list_id}"),
         "ok",
@@ -333,11 +336,17 @@ pub async fn update_item(
             });
         }
     };
+    // A new picture address drops the stored copy of the old one and queues a fresh download.
     sqlx::query(
-        "UPDATE items SET title = ?, url = ?, image_url = ?, price_cents = ?, currency = ?, store = ?, notes = ?,
-                priority = ?, quantity = ?, import_source = COALESCE(?, import_source), updated_at = datetime('now')
-          WHERE id = ?",
+        "UPDATE items SET title = ?2, url = ?3, image_url = ?4,
+                image_blob_id = CASE WHEN image_url IS ?4 THEN image_blob_id END,
+                image_attempts = CASE WHEN image_url IS ?4 THEN image_attempts ELSE 0 END,
+                image_attempted_at = CASE WHEN image_url IS ?4 THEN image_attempted_at END,
+                price_cents = ?5, currency = ?6, store = ?7, notes = ?8, priority = ?9, quantity = ?10,
+                import_source = COALESCE(?11, import_source), updated_at = datetime('now')
+          WHERE id = ?1",
     )
+    .bind(id)
     .bind(&clean.title)
     .bind(&clean.url)
     .bind(&clean.image_url)
@@ -348,9 +357,11 @@ pub async fn update_item(
     .bind(clean.priority)
     .bind(clean.quantity)
     .bind(&clean.import_source)
-    .bind(id)
     .execute(&state.db)
     .await?;
+    if clean.image_url.is_some() && clean.image_url != item.image_url {
+        state.image_jobs.wake();
+    }
     Ok(redirect_flash(
         &format!("/lists/{}#item-{id}", list.id),
         "ok",
@@ -451,8 +462,8 @@ pub async fn copy_item(
         ));
     }
     sqlx::query(
-        "INSERT INTO items (wishlist_id, title, url, image_url, price_cents, currency, store, notes, priority, quantity, import_source)
-         SELECT ?, title, url, image_url, price_cents, currency, store, notes, priority, quantity, import_source FROM items WHERE id = ?",
+        "INSERT INTO items (wishlist_id, title, url, image_url, image_blob_id, price_cents, currency, store, notes, priority, quantity, import_source)
+         SELECT ?, title, url, image_url, image_blob_id, price_cents, currency, store, notes, priority, quantity, import_source FROM items WHERE id = ?",
     )
     .bind(target.id)
     .bind(item.id)
@@ -500,13 +511,14 @@ async fn save_to_own_list(
         ));
     }
     sqlx::query(
-        "INSERT INTO items (wishlist_id, title, url, image_url, price_cents, currency, store, import_source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO items (wishlist_id, title, url, image_url, image_blob_id, price_cents, currency, store, import_source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(target.id)
     .bind(&item.title)
     .bind(&item.url)
     .bind(&item.image_url)
+    .bind(item.image_blob_id)
     .bind(item.price_cents)
     .bind(&item.currency)
     .bind(&item.store)
@@ -911,8 +923,8 @@ pub async fn public_unclaim(
 /// Copy a reservation that's now bought into its buyer's gift history.
 async fn record_gift(conn: &mut sqlx::SqliteConnection, claim_id: i64) -> sqlx::Result<()> {
     sqlx::query(
-        "INSERT OR IGNORE INTO gift_history (buyer_id, claim_id, title, url, image_url, price_cents, currency, store, quantity, recipient, occasion, event_date)
-         SELECT c.user_id, c.id, i.title, i.url, i.image_url, i.price_cents, i.currency, i.store, c.quantity,
+        "INSERT OR IGNORE INTO gift_history (buyer_id, claim_id, title, url, image_url, image_blob_id, price_cents, currency, store, quantity, recipient, occasion, event_date)
+         SELECT c.user_id, c.id, i.title, i.url, i.image_url, i.image_blob_id, i.price_cents, i.currency, i.store, c.quantity,
                 COALESCE(w.recipient_name, u.display_name), w.title, w.event_date
            FROM claims c JOIN items i ON i.id = c.item_id JOIN wishlists w ON w.id = i.wishlist_id
            JOIN users u ON u.id = w.owner_id
@@ -1102,8 +1114,10 @@ pub async fn history(
 ) -> AppResult<Response> {
     let user = ctx.require_user()?.clone();
     let gifts: Vec<Gift> = sqlx::query_as(
-        "SELECT id, title, url, image_url, price_cents, currency, quantity, recipient, occasion, purchased_at
-           FROM gift_history WHERE buyer_id = ? ORDER BY recipient COLLATE NOCASE, purchased_at DESC, id DESC",
+        "SELECT g.id, g.title, g.url, g.image_url, b.key AS image_key, g.price_cents, g.currency, g.quantity,
+                g.recipient, g.occasion, g.purchased_at
+           FROM gift_history g LEFT JOIN blobs b ON b.id = g.image_blob_id
+          WHERE g.buyer_id = ? ORDER BY g.recipient COLLATE NOCASE, g.purchased_at DESC, g.id DESC",
     )
     .bind(user.id)
     .fetch_all(&state.db)
@@ -1266,6 +1280,9 @@ pub async fn import_list(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    if added > 0 {
+        state.image_jobs.wake();
+    }
 
     if imported.items.is_empty() && imported.already_bought == 0 {
         return render(ListImportPage {

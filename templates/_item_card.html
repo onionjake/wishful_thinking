@@ -1,6 +1,6 @@
 <article class="item{% if iv.item.received %} received{% endif %}{% if iv.item.fully_claimed() %} taken{% endif %}" id="item-{{ iv.item.id }}">
   <div class="item-img">
-    {% if let Some(img) = iv.item.image_url %}<img src="{{ img }}" alt="" loading="lazy" referrerpolicy="no-referrer">{% else %}<span>🎁</span>{% endif %}
+    {% if let Some(img) = iv.item.image_src() %}<img src="{{ img }}" alt="" loading="lazy" referrerpolicy="no-referrer">{% else %}<span>🎁</span>{% endif %}
   </div>
   <div class="item-body">
     <div class="item-top">

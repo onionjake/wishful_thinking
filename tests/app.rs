@@ -1481,3 +1481,170 @@ async fn bookmarklet_imports_from_the_page_in_the_browser() {
 fn urlencode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
+
+/// A tiny but real PNG (1×1).
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0\x1f\x15\xc4\x89\0\0\0\rIDATx\x9cc\xf8\xff\xff?\0\x05\xfe\x02\xfe\xa7\x35\x81\x84\0\0\0\0IEND\xaeB`\x82";
+
+async fn fake_image_host() -> String {
+    let app = Router::new()
+        .route(
+            "/lamp.png",
+            axum::routing::get(|| async { ([(header::CONTENT_TYPE, "image/png")], PNG) }),
+        )
+        .route(
+            // A server that lies about the type: it's HTML, which must not be kept.
+            "/fake.png",
+            axum::routing::get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "image/png")],
+                    "<script>alert(1)</script>",
+                )
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+/// The `/images/<key>` address on a page, if any.
+fn stored_image_path(page: &str) -> Option<String> {
+    let at = page.find("src=\"/images/")? + 5;
+    Some(page[at..].split('"').next().unwrap().to_string())
+}
+
+#[tokio::test]
+async fn pictures_are_downloaded_and_served_locally() {
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
+    let host = fake_image_host().await;
+    let mut c = Client::new(&app);
+    c.signup("Sam", "sam@example.com").await;
+    let list = c.post("/lists", &[("title", "Wishes")]).await;
+    let list_id = id_from_location(&list.location.unwrap(), "/lists/");
+    let lamp = format!("{host}/lamp.png");
+    let r = c
+        .post(
+            &format!("/lists/{list_id}/items"),
+            &[("title", "Lamp"), ("image_url", &lamp)],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.body);
+
+    // Until the download runs, the page shows the store's address.
+    let page = c.get(&format!("/lists/{list_id}")).await.body;
+    assert!(page.contains(&format!("src=\"{lamp}\"")));
+    assert!(stored_image_path(&page).is_none());
+
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        1
+    );
+    let page = c.get(&format!("/lists/{list_id}")).await.body;
+    let src = stored_image_path(&page).expect("stored picture on the list page");
+    assert!(!page.contains(&format!("src=\"{lamp}\"")));
+    let home = c.get("/").await.body;
+    assert!(home.contains(&src), "list previews use the stored copy");
+
+    let resp = app
+        .clone()
+        .oneshot(Request::get(&src).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()[header::CONTENT_TYPE], "image/png");
+    assert!(resp.headers()[header::CACHE_CONTROL]
+        .to_str()
+        .unwrap()
+        .contains("immutable"));
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.as_ref(), PNG);
+    for bad in [
+        "/images/../../etc/passwd",
+        &format!("/images/{}", "0".repeat(64)),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(Request::get(bad).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{bad}");
+    }
+
+    // Nothing left to do: a second pass downloads nothing.
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        0
+    );
+
+    // A copy shares the stored picture without downloading it again.
+    let other = c.post("/lists", &[("title", "Other")]).await;
+    let other_id = id_from_location(&other.location.unwrap(), "/lists/");
+    let item_id = item_ids(&page)[0];
+    c.post(
+        &format!("/items/{item_id}/copy"),
+        &[("target_list", &other_id.to_string()), ("mode", "copy")],
+    )
+    .await;
+    let copied = c.get(&format!("/lists/{other_id}")).await.body;
+    assert_eq!(stored_image_path(&copied).as_deref(), Some(src.as_str()));
+
+    // Changing the picture to something that isn't an image drops the stored copy and falls
+    // back to the address; the bogus file is never kept.
+    let fake = format!("{host}/fake.png");
+    c.post(
+        &format!("/items/{item_id}/edit"),
+        &[("title", "Lamp"), ("image_url", &fake)],
+    )
+    .await;
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        0
+    );
+    let page = c.get(&format!("/lists/{list_id}")).await.body;
+    assert!(page.contains(&format!("src=\"{fake}\"")));
+    assert!(stored_image_path(&page).is_none());
+    let blobs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blobs")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(blobs, 1);
+    // It isn't retried straight away.
+    assert_eq!(
+        wishful_thinking::images::store_pending(&state)
+            .await
+            .unwrap(),
+        0
+    );
+    let attempts: i64 = sqlx::query_scalar("SELECT image_attempts FROM items WHERE id = ?")
+        .bind(item_id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(attempts, 1);
+
+    // Once no wish uses a picture any more, the hourly purge deletes it (after a grace period).
+    let copy_id = item_ids(&copied)[0];
+    c.post(&format!("/items/{copy_id}/delete"), &[]).await;
+    let purge = || wishful_thinking::storage::purge_unattached(&state.db, &state.storage);
+    assert_eq!(purge().await.unwrap(), 0, "too new to purge");
+    sqlx::query("UPDATE blobs SET created_at = datetime('now', '-2 days')")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(purge().await.unwrap(), 1);
+    let resp = app
+        .clone()
+        .oneshot(Request::get(&src).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let key = src.trim_start_matches("/images/");
+    assert!(state.storage.get(key).await.unwrap().is_none());
+}

@@ -16,6 +16,10 @@ pub struct Config {
     pub allow_private_fetch: bool,
     pub llm: Option<LlmConfig>,
     pub llm_mode: LlmMode,
+    /// Where downloaded pictures are kept: an `object_store` URL (`file:///…`, `memory:///`, or
+    /// `s3://…` once that feature is enabled) or a directory. Defaults to `storage/` next to the
+    /// database file.
+    pub storage_url: String,
 }
 
 fn var(name: &str) -> Option<String> {
@@ -36,14 +40,20 @@ impl Config {
             None => LlmMode::Fallback,
             Some(m) => m.parse()?,
         };
+        let database_url = var("WT_DATABASE_URL").unwrap_or_else(|| "sqlite://wishful.db".into());
+        let storage_url = match var("WT_STORAGE_URL") {
+            Some(url) => url,
+            None => default_storage(&database_url)?,
+        };
         Ok(Config {
             bind: var("WT_BIND").unwrap_or_else(|| "127.0.0.1:3000".into()),
-            database_url: var("WT_DATABASE_URL").unwrap_or_else(|| "sqlite://wishful.db".into()),
+            database_url,
             base_url: var("WT_BASE_URL").map(|u| u.trim_end_matches('/').to_string()),
             secure_cookies: flag("WT_SECURE_COOKIES"),
             allow_private_fetch: flag("WT_ALLOW_PRIVATE_FETCH"),
             llm,
             llm_mode,
+            storage_url,
         })
     }
 
@@ -57,6 +67,24 @@ impl Config {
             allow_private_fetch: true,
             llm: None,
             llm_mode: LlmMode::Off,
+            storage_url: "memory:///".into(),
         }
     }
+}
+
+/// `storage/` beside the SQLite file, so the database and its pictures live (and get backed up)
+/// together. An in-memory database gets in-memory storage.
+fn default_storage(database_url: &str) -> anyhow::Result<String> {
+    use std::str::FromStr;
+    if database_url.contains(":memory:") {
+        return Ok("memory:///".into());
+    }
+    let opts = sqlx::sqlite::SqliteConnectOptions::from_str(database_url)?;
+    let dir = opts
+        .get_filename()
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."))
+        .join("storage");
+    Ok(dir.to_string_lossy().into_owned())
 }

@@ -2,10 +2,10 @@ use axum::extract::State;
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
 
-use crate::db;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::templates::{render, Ctx, DashboardPage, HomePage};
 use crate::AppState;
+use crate::{db, storage};
 
 pub async fn home(State(state): State<AppState>, ctx: Ctx) -> AppResult<Response> {
     let Some(user) = ctx.user.clone() else {
@@ -106,4 +106,41 @@ pub async fn icon_512() -> impl IntoResponse {
 
 pub async fn icon_maskable_512() -> impl IntoResponse {
     png(include_bytes!("../../static/icon-maskable-512.png"))
+}
+
+/// A stored picture. Keys are content hashes, so a key's bytes never change: cache it forever.
+/// Pictures aren't secret (they're product photos, and public lists show them to anyone), so
+/// this needs no sign-in; the key is unguessable unless you already have the picture.
+pub async fn stored_image(
+    State(state): State<AppState>,
+    axum::extract::Path(key): axum::extract::Path<String>,
+) -> AppResult<Response> {
+    if !storage::is_valid_key(&key) {
+        return Err(AppError::NotFound);
+    }
+    let content_type = storage::content_type(&state.db, &key)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let bytes = state
+        .storage
+        .get(&key)
+        .await
+        .map_err(|e| AppError::Other(anyhow::anyhow!("reading stored image {key}: {e}")))?
+        .ok_or(AppError::NotFound)?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type),
+            (
+                header::CACHE_CONTROL,
+                "public, max-age=31536000, immutable".to_string(),
+            ),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; sandbox".to_string(),
+            ),
+        ],
+        bytes,
+    )
+        .into_response())
 }

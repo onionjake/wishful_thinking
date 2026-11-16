@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use sqlx::sqlite::SqliteConnectOptions;
 use tracing_subscriber::EnvFilter;
-use wishful_thinking::{app, auth, db, AppState, Config};
+use wishful_thinking::{app, auth, db, images, AppState, Config};
 
 const USAGE: &str = "usage: wishful_thinking [reset-password EMAIL]";
 
@@ -39,6 +39,8 @@ async fn main() -> anyhow::Result<()> {
     }
     let bind = config.bind.clone();
     let state = AppState::new(config).await?;
+    tracing::info!(storage = ?state.storage, "pictures are kept in this store");
+    images::spawn_worker(state.clone());
 
     // Expired sessions are swept hourly.
     let db = state.db.clone();

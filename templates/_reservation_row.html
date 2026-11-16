@@ -1,5 +1,5 @@
 <div class="row-item">
-  <div class="row-img">{% if let Some(img) = r.item.image_url %}<img src="{{ img }}" alt="" loading="lazy" referrerpolicy="no-referrer">{% else %}<span>🎁</span>{% endif %}</div>
+  <div class="row-img">{% if let Some(img) = r.item.image_src() %}<img src="{{ img }}" alt="" loading="lazy" referrerpolicy="no-referrer">{% else %}<span>🎁</span>{% endif %}</div>
   <div class="grow">
     <b>{% if let Some(u) = r.item.url %}<a href="{{ u }}" target="_blank" rel="noopener noreferrer nofollow">{{ r.item.title }}</a>{% else %}{{ r.item.title }}{% endif %}</b>{% if r.quantity > 1 %} ×{{ r.quantity }}{% endif %}
     <div class="muted small">For {{ r.recipient }} · <a href="/lists/{{ r.list_id }}#item-{{ r.item.id }}">{{ r.list_title }}</a>{% if let Some(cd) = r.countdown() %} · 📅 {{ cd }}{% endif %}{% if r.item.notes.is_some() %} · 📝 {{ r.item.notes.as_deref().unwrap_or("") }}{% endif %}</div>

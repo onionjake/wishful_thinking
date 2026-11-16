@@ -121,7 +121,9 @@ const SUMMARY_SELECT: &str = "SELECT w.id, w.title, w.recipient_name, w.event_da
     w.public_token,
     (SELECT group_concat(f.name, ', ') FROM wishlist_families wf JOIN families f ON f.id = wf.family_id WHERE wf.wishlist_id = w.id) AS family_names,
     w.archived,
-    (SELECT group_concat(i.image_url, char(10)) FROM items i WHERE i.wishlist_id = w.id AND i.image_url IS NOT NULL AND i.received = 0) AS images
+    (SELECT group_concat(COALESCE('/images/' || b.key, i.image_url), char(10))
+       FROM items i LEFT JOIN blobs b ON b.id = i.image_blob_id
+      WHERE i.wishlist_id = w.id AND i.image_url IS NOT NULL AND i.received = 0) AS images
   FROM wishlists w JOIN users u ON u.id = w.owner_id";
 
 /// Lists the user owns or co-manages.
@@ -168,7 +170,11 @@ pub struct Item {
     pub wishlist_id: i64,
     pub title: String,
     pub url: Option<String>,
+    /// The picture's original address.
     pub image_url: Option<String>,
+    /// Our stored copy of it, once downloaded.
+    pub image_blob_id: Option<i64>,
+    pub image_key: Option<String>,
     pub price_cents: Option<i64>,
     pub currency: String,
     pub store: Option<String>,
@@ -180,7 +186,16 @@ pub struct Item {
     pub claimed_qty: i64,
 }
 
+/// The address pages use for a picture: our stored copy when there is one, else the original.
+fn image_src(key: Option<&str>, url: Option<&str>) -> Option<String> {
+    key.map(crate::storage::image_path)
+        .or_else(|| url.map(str::to_string))
+}
+
 impl Item {
+    pub fn image_src(&self) -> Option<String> {
+        image_src(self.image_key.as_deref(), self.image_url.as_deref())
+    }
     pub fn price_display(&self) -> Option<String> {
         self.price_cents.map(|c| price::format(c, &self.currency))
     }
@@ -218,10 +233,10 @@ pub fn priority_label(p: i64) -> &'static str {
 }
 
 pub const ITEM_SELECT: &str =
-    "SELECT i.id, i.wishlist_id, i.title, i.url, i.image_url, i.price_cents, i.currency, i.store,
-    i.notes, i.priority, i.quantity, i.received, i.import_source,
+    "SELECT i.id, i.wishlist_id, i.title, i.url, i.image_url, i.image_blob_id, b.key AS image_key,
+    i.price_cents, i.currency, i.store, i.notes, i.priority, i.quantity, i.received, i.import_source,
     COALESCE((SELECT SUM(c.quantity) FROM claims c WHERE c.item_id = i.id), 0) AS claimed_qty
-  FROM items i";
+  FROM items i LEFT JOIN blobs b ON b.id = i.image_blob_id";
 
 pub async fn items_for_list(db: &Db, list_id: i64) -> sqlx::Result<Vec<Item>> {
     sqlx::query_as::<_, Item>(&format!(
@@ -277,6 +292,7 @@ pub struct Gift {
     pub title: String,
     pub url: Option<String>,
     pub image_url: Option<String>,
+    pub image_key: Option<String>,
     pub price_cents: Option<i64>,
     pub currency: String,
     pub quantity: i64,
@@ -286,6 +302,9 @@ pub struct Gift {
 }
 
 impl Gift {
+    pub fn image_src(&self) -> Option<String> {
+        image_src(self.image_key.as_deref(), self.image_url.as_deref())
+    }
     pub fn price_display(&self) -> Option<String> {
         self.price_cents.map(|c| price::format(c, &self.currency))
     }

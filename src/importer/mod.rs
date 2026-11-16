@@ -76,6 +76,15 @@ impl Importer {
         }
     }
 
+    /// Download a picture for keeping. Returns the bytes and their image type.
+    pub async fn download_image(
+        &self,
+        raw_url: &str,
+    ) -> Result<(Vec<u8>, &'static str), fetch::FetchError> {
+        let url = fetch::validate_url(raw_url, self.allow_private)?;
+        fetch::fetch_image(&self.http, &url).await
+    }
+
     /// Import a URL. Network failures are reported as warnings with whatever could be
     /// inferred from the URL itself, so the user can always finish the item by hand.
     pub async fn import(&self, raw_url: &str) -> Result<ImportOutcome, fetch::FetchError> {

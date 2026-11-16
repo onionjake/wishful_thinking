@@ -28,6 +28,8 @@ pub enum FetchError {
     TooLarge,
     #[error("Couldn't reach that site ({0})")]
     Network(String),
+    #[error("That link isn't a picture")]
+    NotImage,
 }
 
 pub enum Fetched {
@@ -202,6 +204,63 @@ pub async fn fetch(client: &reqwest::Client, url: &Url) -> Result<Fetched, Fetch
     })
 }
 
+/// Largest picture that will be downloaded and kept.
+pub const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+
+/// The image types we keep, recognised from the file's first bytes rather than the server's
+/// Content-Type (which is often wrong). SVG is deliberately absent: it can carry scripts.
+pub fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
+    let at = |offset: usize, magic: &[u8]| bytes.get(offset..offset + magic.len()) == Some(magic);
+    if at(0, b"\xFF\xD8\xFF") {
+        Some("image/jpeg")
+    } else if at(0, b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if at(0, b"GIF87a") || at(0, b"GIF89a") {
+        Some("image/gif")
+    } else if at(0, b"RIFF") && at(8, b"WEBP") {
+        Some("image/webp")
+    } else if at(4, b"ftypavif") || at(4, b"ftypavis") {
+        Some("image/avif")
+    } else {
+        None
+    }
+}
+
+/// Download a picture: same safety rules as page fetches, a size cap, and only real images.
+pub async fn fetch_image(
+    client: &reqwest::Client,
+    url: &Url,
+) -> Result<(Vec<u8>, &'static str), FetchError> {
+    let mut resp = client
+        .get(url.clone())
+        .header(
+            header::ACCEPT,
+            "image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8",
+        )
+        .send()
+        .await
+        .map_err(map_err)?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(FetchError::Status(status.as_u16()));
+    }
+    if resp
+        .content_length()
+        .is_some_and(|l| l as usize > MAX_IMAGE_BYTES)
+    {
+        return Err(FetchError::TooLarge);
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(map_err)? {
+        body.extend_from_slice(&chunk);
+        if body.len() > MAX_IMAGE_BYTES {
+            return Err(FetchError::TooLarge);
+        }
+    }
+    let content_type = sniff_image(&body).ok_or(FetchError::NotImage)?;
+    Ok((body, content_type))
+}
+
 fn map_err(e: reqwest::Error) -> FetchError {
     if e.is_timeout() {
         FetchError::Timeout
@@ -251,5 +310,17 @@ mod tests {
         assert!(validate_url("example.com/product", false).is_ok());
         assert!(validate_url("https://www.target.com/p/123", false).is_ok());
         assert!(validate_url("http://127.0.0.1:9000/", true).is_ok());
+    }
+
+    #[test]
+    fn sniffs_image_types() {
+        assert_eq!(sniff_image(b"\xFF\xD8\xFF\xE0rest"), Some("image/jpeg"));
+        assert_eq!(sniff_image(b"\x89PNG\r\n\x1a\n...."), Some("image/png"));
+        assert_eq!(sniff_image(b"GIF89a.."), Some("image/gif"));
+        assert_eq!(sniff_image(b"RIFF\0\0\0\0WEBPVP8 "), Some("image/webp"));
+        assert_eq!(sniff_image(b"\0\0\0\x1cftypavif"), Some("image/avif"));
+        assert_eq!(sniff_image(b"<svg xmlns=..."), None);
+        assert_eq!(sniff_image(b"<html>"), None);
+        assert_eq!(sniff_image(b""), None);
     }
 }
