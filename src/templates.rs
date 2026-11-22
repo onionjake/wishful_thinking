@@ -202,16 +202,22 @@ pub struct MonthOption {
     pub selected: bool,
 }
 
-/// The next two years of months (further if needed to include `selected`).
+/// Two years of reveal months from the earliest a gift-giver may pick (further if needed to
+/// include `selected`). A `selected` month before that, saved before the limit existed, is kept
+/// at the top so the picker still shows it.
 pub fn month_options(selected: Option<time::Date>) -> Vec<MonthOption> {
-    let mut d = crate::util::this_month();
+    let option = |d: time::Date| MonthOption {
+        value: crate::util::month_value(d),
+        label: crate::util::pretty_month(d),
+        selected: Some(d) == selected,
+    };
+    let mut d = crate::util::earliest_reveal_month();
     let mut out = Vec::new();
+    if let Some(s) = selected.filter(|s| *s < d) {
+        out.push(option(s));
+    }
     while out.len() < 24 || selected.is_some_and(|s| d <= s) {
-        out.push(MonthOption {
-            value: crate::util::month_value(d),
-            label: crate::util::pretty_month(d),
-            selected: Some(d) == selected,
-        });
+        out.push(option(d));
         d = crate::util::next_month(d);
     }
     out

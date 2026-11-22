@@ -42,7 +42,7 @@
 <p class="hint">Planning to buy something? Tap <b>I'll get this</b> and enter your name so nobody else buys it too. The list owner won't see who.</p>
 {% endif %}
 {% if can_claim && self.asks_reveal() && !items.is_empty() %}
-<p class="hint">📅 When you reserve a gift, pick the month {{ self.recipient_label() }} can find out it's been bought — usually the month after the occasion (for Christmas, choose January). It doesn't have to be exact. Until then, it stays a secret.</p>
+<p class="hint">📅 When you reserve a gift, pick the month {{ self.recipient_label() }} can find out it's been bought — usually the month after the occasion (for Christmas, choose January). It doesn't have to be exact, but it's at least two months away so a gift isn't given away early. Until then, it stays a secret.</p>
 {% endif %}
 
 {% if items.is_empty() && taken.is_empty() %}

@@ -96,9 +96,15 @@ pub fn this_month() -> time::Date {
     today().replace_day(1).unwrap_or_else(|_| today())
 }
 
-/// A reveal month a gift-giver may pick: this month (shows right away) up to five years out.
+/// The soonest reveal month a gift-giver may pick: two months after this one (January, in
+/// November). An earlier one would show the gift as given right away, or before it's handed over.
+pub fn earliest_reveal_month() -> time::Date {
+    next_month(next_month(this_month()))
+}
+
+/// A reveal month a gift-giver may pick: from [`earliest_reveal_month`] up to five years out.
 pub fn reveal_month(s: &str) -> Option<time::Date> {
-    parse_month(s).filter(|d| *d >= this_month() && d.year() <= today().year() + 5)
+    parse_month(s).filter(|d| *d >= earliest_reveal_month() && d.year() <= today().year() + 5)
 }
 
 /// Whether a reservation's reveal date (`YYYY-MM-DD`) has arrived. No date means never.
@@ -147,7 +153,10 @@ mod tests {
         assert_eq!(next_month(parse_date("2026-12-25").unwrap()), jan);
         assert_eq!(parse_month("2027-13"), None);
         assert_eq!(parse_month("soon"), None);
-        assert!(reveal_month(&month_value(this_month())).is_some());
+        let earliest = earliest_reveal_month();
+        assert!(reveal_month(&month_value(earliest)).is_some());
+        assert!(reveal_month(&month_value(this_month())).is_none());
+        assert!(reveal_month(&month_value(next_month(this_month()))).is_none());
         assert!(reveal_month("2001-01").is_none());
     }
 }

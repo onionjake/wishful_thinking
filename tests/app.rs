@@ -115,6 +115,34 @@ async fn test_app() -> Router {
     app(state)
 }
 
+/// "YYYY-MM" for the month this many months from now.
+fn month_from_now(months: u8) -> String {
+    let mut d = time::OffsetDateTime::now_utc().date();
+    for _ in 0..months {
+        d = d.replace_day(1).unwrap() + time::Duration::days(32);
+    }
+    format!("{:04}-{:02}", d.year(), u8::from(d.month()))
+}
+
+/// Givers can't pick a reveal month sooner than two months out, so make a reservation's month
+/// arrive by moving it to the start of this one, straight in the database.
+async fn reveal_now(state: &AppState, claim_id: i64) {
+    sqlx::query("UPDATE claims SET reveal_on = date('now', 'start of month') WHERE id = ?")
+        .bind(claim_id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+}
+
+/// The id of the reservation on an item (the test only makes one per item).
+async fn claim_on(state: &AppState, item_id: i64) -> i64 {
+    sqlx::query_scalar("SELECT id FROM claims WHERE item_id = ?")
+        .bind(item_id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap()
+}
+
 fn id_from_location(loc: &str, prefix: &str) -> i64 {
     loc.trim_start_matches(prefix)
         .split(['/', '#', '?'])
@@ -250,7 +278,8 @@ async fn protected_pages_redirect_to_login() {
 
 #[tokio::test]
 async fn family_sharing_and_secret_reservations() {
-    let app = test_app().await;
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
 
     // Mom creates a family and a list for her kid.
     let mut mom = Client::new(&app);
@@ -398,20 +427,42 @@ async fn family_sharing_and_secret_reservations() {
         .await
         .body
         .contains("Grandma"));
-    // Grandma can change the month from her shopping list; once it arrives, Mom sees who gave it.
+    // Grandma can change the month from her shopping list, but not to one under two months away.
     let claim_id: i64 = {
         let idx = shopping.find("/claims/").unwrap() + "/claims/".len();
         shopping[idx..].split('/').next().unwrap().parse().unwrap()
     };
-    let today = time::OffsetDateTime::now_utc().date();
-    let this_month = format!("{:04}-{:02}", today.year(), u8::from(today.month()));
+    let this_month = month_from_now(0);
+    for too_soon in [month_from_now(0), month_from_now(1)] {
+        let r = grandma
+            .post(
+                &format!("/claims/{claim_id}/reveal"),
+                &[("reveal_month", &too_soon), ("back", "/reservations")],
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::SEE_OTHER);
+        let shopping = grandma.get("/reservations").await.body;
+        assert!(shopping.contains("pick a month from the list"));
+        assert!(shopping.contains(&june_option));
+        assert!(!shopping.contains(&format!(r#"value="{too_soon}""#)));
+    }
     let r = grandma
         .post(
             &format!("/claims/{claim_id}/reveal"),
-            &[("reveal_month", &this_month), ("back", "/reservations")],
+            &[
+                ("reveal_month", &month_from_now(2)),
+                ("back", "/reservations"),
+            ],
         )
         .await;
     assert_eq!(r.status, StatusCode::SEE_OTHER);
+    assert!(grandma
+        .get("/reservations")
+        .await
+        .body
+        .contains(&format!(r#"value="{}" selected"#, month_from_now(2))));
+    // Once the month arrives, Mom sees who gave it.
+    reveal_now(&state, claim_id).await;
     assert!(grandma
         .get("/reservations")
         .await
@@ -498,7 +549,7 @@ async fn public_link_guest_reservation() {
             &[
                 ("guest_name", "Jamie"),
                 ("quantity", "1"),
-                ("reveal_month", &format!("{}-01", year_from_now(1))),
+                ("reveal_month", &month_from_now(12)),
             ],
         )
         .await;
@@ -586,7 +637,8 @@ async fn cross_site_posts_are_blocked() {
 
 #[tokio::test]
 async fn reservations_are_revealed_in_the_chosen_month() {
-    let app = test_app().await;
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
     let mut alex = Client::new(&app);
     alex.signup("Alex Kim", "alex@example.com").await;
     let r = alex.post("/lists", &[("title", "Christmas")]).await;
@@ -611,36 +663,47 @@ async fn reservations_are_revealed_in_the_chosen_month() {
         .match_indices("/items/")
         .map(|(i, _)| page[i + 7..].split('/').next().unwrap().parse().unwrap())
         .collect();
-    let this_month = {
-        let today = time::OffsetDateTime::now_utc().date();
-        format!("{:04}-{:02}", today.year(), u8::from(today.month()))
-    };
-    // A gift given already (reveal this month), and one still secret.
-    let next_january = format!("{}-01", year_from_now(1));
-    for (id, month) in [(ids[0], &this_month), (ids[1], &next_january)] {
+    // The list has no date, so nothing is suggested, and the picker starts two months out: a
+    // gift can't be shown as given right away by picking this month.
+    assert!(page.contains(r#"<option value="">Pick a month…</option>"#));
+    assert!(page.contains(&format!(r#"<option value="{}">"#, month_from_now(2))));
+    for too_soon in [month_from_now(0), month_from_now(1)] {
+        assert!(!page.contains(&format!(r#"value="{too_soon}""#)));
+    }
+    assert!(page.contains("data-reveal-confirm"));
+    // A gift given already (its month has come), and one still secret.
+    let in_a_year = month_from_now(12);
+    for id in [ids[0], ids[1]] {
         let r = guest
             .post(
                 &format!("/p/{token}/items/{id}/claim"),
-                &[("guest_name", "Jamie"), ("reveal_month", month)],
+                &[("guest_name", "Jamie"), ("reveal_month", &in_a_year)],
             )
             .await;
         assert_eq!(r.status, StatusCode::SEE_OTHER);
     }
+    reveal_now(&state, claim_on(&state, ids[0]).await).await;
     let page = guest.get(&format!("/p/{token}")).await.body;
     assert_eq!(page.matches("You're getting this").count(), 2);
-    // A month in the past is refused.
-    let mut guest2 = Client::new(&app);
-    guest2
-        .post(
-            &format!("/p/{token}/items/{}/claim", ids[1]),
-            &[("guest_name", "Sam"), ("reveal_month", "2001-01")],
-        )
-        .await;
-    assert!(guest2
-        .get(&format!("/p/{token}"))
-        .await
-        .body
-        .contains("pick a month from the list"));
+    // A month in the past, or under two months away, is refused.
+    for (i, month) in ["2001-01".to_string(), month_from_now(0), month_from_now(1)]
+        .iter()
+        .enumerate()
+    {
+        let mut guest2 = Client::new(&app);
+        let name = format!("Sam {i}");
+        guest2
+            .post(
+                &format!("/p/{token}/items/{}/claim", ids[1]),
+                &[("guest_name", &name), ("reveal_month", month)],
+            )
+            .await;
+        assert!(guest2
+            .get(&format!("/p/{token}"))
+            .await
+            .body
+            .contains("pick a month from the list"));
+    }
 
     let page = alex.get(&format!("/lists/{list_id}")).await.body;
     assert!(page.contains("From Jamie"));
@@ -707,7 +770,7 @@ async fn gift_history_outlives_the_list_and_stays_private() {
     buyer
         .post(
             &format!("/items/{item_id}/claim"),
-            &[("reveal_month", &format!("{}-01", year_from_now(1)))],
+            &[("reveal_month", &month_from_now(12))],
         )
         .await;
 
@@ -779,7 +842,7 @@ async fn releasing_a_bought_gift_removes_it_from_history() {
     buyer
         .post(
             &format!("/items/{item_id}/claim"),
-            &[("reveal_month", &format!("{}-01", year_from_now(1)))],
+            &[("reveal_month", &month_from_now(12))],
         )
         .await;
     let claim = claim_id(&buyer.get("/reservations").await.body);
@@ -927,7 +990,8 @@ fn item_ids(page: &str) -> Vec<i64> {
 
 #[tokio::test]
 async fn each_manager_chooses_whether_they_see_reservations() {
-    let app = test_app().await;
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
 
     // Mom makes Maya's list before Maya has an account, and sees reservations so she can buy.
     let mut mom = Client::new(&app);
@@ -1005,20 +1069,18 @@ async fn each_manager_chooses_whether_they_see_reservations() {
         .await
         .body
         .contains("pick the month"));
-    let this_month = {
-        let today = time::OffsetDateTime::now_utc().date();
-        format!("{:04}-{:02}", today.year(), u8::from(today.month()))
-    };
-    let january = format!("{}-01", year_from_now(1));
+    let in_a_year = month_from_now(12);
     grandma
         .post(
             &format!("/items/{puzzle}/claim"),
-            &[("reveal_month", &this_month)],
+            &[("reveal_month", &month_from_now(2))],
         )
         .await;
+    // Grandma's month has come (she gave the puzzle early).
+    reveal_now(&state, claim_on(&state, puzzle).await).await;
     dad.post(
         &format!("/items/{scooter}/claim"),
-        &[("reveal_month", &january)],
+        &[("reveal_month", &in_a_year)],
     )
     .await;
 
@@ -1046,7 +1108,7 @@ async fn each_manager_chooses_whether_they_see_reservations() {
     assert_eq!(
         maya.post(
             &format!("/items/{robot}/claim"),
-            &[("reveal_month", &january)]
+            &[("reveal_month", &in_a_year)]
         )
         .await
         .status,
@@ -1197,7 +1259,7 @@ async fn receiving_a_gift_you_reserved_on_your_own_list_records_it() {
     let r = mom
         .post(
             &format!("/items/{fishing_rod}/claim"),
-            &[("reveal_month", &format!("{}-01", year_from_now(1)))],
+            &[("reveal_month", &month_from_now(12))],
         )
         .await;
     mom.get(r.location.as_deref().unwrap()).await; // use up the flash naming the gift
@@ -1377,7 +1439,7 @@ async fn reserved_wishes_sink_below_open_ones() {
     let r = buyer
         .post(
             &format!("/items/{rod_id}/claim"),
-            &[("reveal_month", &format!("{}-01", year_from_now(1)))],
+            &[("reveal_month", &month_from_now(12))],
         )
         .await;
     assert_eq!(r.status, StatusCode::SEE_OTHER);
@@ -2516,7 +2578,7 @@ async fn acting_admins_keep_their_own_surprises() {
     let (mut joe, mut mom, list_id, item_id) = family_with_item(&app).await;
     mom.post(
         &format!("/items/{item_id}/claim"),
-        &[("reveal_month", &format!("{}-01", year_from_now(1)))],
+        &[("reveal_month", &month_from_now(12))],
     )
     .await;
     let claim = claim_id(&mom.get("/reservations").await.body);
@@ -2544,7 +2606,7 @@ async fn acting_admins_keep_their_own_surprises() {
     let r = joe
         .post(
             &format!("/items/{item_id}/claim"),
-            &[("reveal_month", &format!("{}-01", year_from_now(1)))],
+            &[("reveal_month", &month_from_now(12))],
         )
         .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);

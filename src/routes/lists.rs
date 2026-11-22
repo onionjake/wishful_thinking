@@ -482,13 +482,14 @@ pub async fn build_list_page(
         _ => vec![],
     };
     let guest_name = String::new();
-    // Suggest the month after the occasion, e.g. January for Christmas.
+    // Suggest the month after the occasion, e.g. January for Christmas, if it's not too soon.
     let default_reveal = list
         .event_date
         .as_deref()
         .and_then(util::parse_date)
         .filter(|d| *d >= util::today())
-        .map(util::next_month);
+        .map(util::next_month)
+        .filter(|d| *d >= util::earliest_reveal_month());
     Ok(ListPage {
         reveal_options: month_options(default_reveal),
         secret_reservations,

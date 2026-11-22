@@ -32,6 +32,53 @@
     });
   });
 
+  // Reserving a surprise gift: check the reveal month with the giver before saving, since from
+  // then on the list owner sees who gave it. "Change month" goes back to the picker.
+  document.querySelectorAll("select[data-reveal-confirm]").forEach(function (sel) {
+    var form = sel.form, confirmed = false;
+    form.addEventListener("submit", function (e) {
+      if (confirmed || !sel.value) return;
+      var parts = sel.value.split("-");
+      var when = new Date(+parts[0], +parts[1] - 1, 1).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
+      var question = "Do you plan on giving this gift before " + when + "?";
+      var detail = (sel.dataset.recipient || "They") + " will be able to see who it's from starting " + when + ".";
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      askReveal(question, detail, function () {
+        confirmed = true;
+        if (form.requestSubmit) form.requestSubmit(); else form.submit();
+      }, function () {
+        sel.focus();
+        if (sel.showPicker) { try { sel.showPicker(); } catch (err) { /* needs a user gesture */ } }
+      });
+    }, true);
+  });
+  function askReveal(question, detail, yes, change) {
+    if (typeof HTMLDialogElement !== "function") {
+      if (confirm(question + "\n\n" + detail + "\n\nPress Cancel to pick a later month.")) yes(); else change();
+      return;
+    }
+    var dlg = document.createElement("dialog");
+    dlg.className = "confirm-dialog";
+    dlg.innerHTML = '<p class="confirm-q"></p><p class="muted small"></p>' +
+      '<div class="confirm-actions"><button type="button" class="btn btn-small btn-ghost" data-act="change">Change month</button>' +
+      '<button type="button" class="btn btn-small" data-act="yes">Yes, reserve it</button></div>';
+    dlg.querySelector(".confirm-q").textContent = question;
+    dlg.querySelector(".muted").textContent = detail;
+    var answer = "change";
+    dlg.addEventListener("click", function (e) {
+      var act = e.target.dataset && e.target.dataset.act;
+      if (act) { answer = act; dlg.close(); }
+    });
+    dlg.addEventListener("close", function () {
+      dlg.remove();
+      if (answer === "yes") yes(); else change();
+    });
+    document.body.appendChild(dlg);
+    dlg.showModal();
+    dlg.querySelector('[data-act="yes"]').focus();
+  }
+
   // Copy-to-clipboard buttons.
   document.querySelectorAll("[data-copy]").forEach(function (btn) {
     btn.addEventListener("click", function () {
