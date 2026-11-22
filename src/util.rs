@@ -21,7 +21,14 @@ pub fn urlencode(s: &str) -> String {
 /// Only allow local, absolute-path redirects (prevents open redirects via `?next=`).
 pub fn safe_next(next: Option<&str>) -> String {
     match next {
-        Some(n) if n.starts_with('/') && !n.starts_with("//") && !n.starts_with("/\\") => {
+        // Browsers drop tabs and line breaks from URLs and read `\\` as `/`, so `/\t/evil.example`
+        // would leave the site.
+        Some(n)
+            if n.starts_with('/')
+                && !n.starts_with("//")
+                && !n.contains('\\')
+                && !n.chars().any(|c| c.is_control()) =>
+        {
             n.to_string()
         }
         _ => "/".to_string(),
@@ -116,6 +123,9 @@ mod tests {
     #[test]
     fn next_is_local_only() {
         assert_eq!(safe_next(Some("/lists/3")), "/lists/3");
+        assert_eq!(safe_next(Some("/\t/evil.example")), "/");
+        assert_eq!(safe_next(Some("/\n/evil.example")), "/");
+        assert_eq!(safe_next(Some("/a\\b")), "/");
         assert_eq!(safe_next(Some("//evil.com")), "/");
         assert_eq!(safe_next(Some("https://evil.com")), "/");
         assert_eq!(safe_next(None), "/");

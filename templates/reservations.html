@@ -5,6 +5,7 @@
   <div><h1>Your shopping list</h1><p class="muted">Gifts you've said you'll get. Only you can see this page.</p></div>
   {% if let Some(t) = total_to_buy %}<div class="stat"><span class="muted small">Still to buy</span><b>{{ t }}</b></div>{% endif %}
 </div>
+{% if ctx.is_acting() %}<p class="hint">🤫 Anything that could be a surprise for you is left out here, so this may not be everything they see.</p>{% endif %}
 {% if to_buy.is_empty() && purchased.is_empty() %}
 <div class="empty-card"><p><b>Nothing here yet.</b> Open a family member's list and tap <b>I'll get this</b> on a gift.</p><a class="btn btn-small" href="/">Browse lists</a> <a class="btn btn-small btn-ghost" href="/history">Gift history</a></div>
 {% endif %}

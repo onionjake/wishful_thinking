@@ -5,6 +5,7 @@
   <div><h1>Gift history</h1><p class="muted">Everything you've marked as bought, and who it was for. Only you can see this page.</p></div>
   <a class="btn btn-ghost" href="/reservations">Shopping list</a>
 </div>
+{% if ctx.is_acting() %}<p class="hint">🤫 Anything that could be a surprise for you is left out here, so this may not be everything they see.</p>{% endif %}
 {% if total == 0 %}
 <div class="empty-card"><p><b>Nothing here yet.</b> When you tap <b>✓ Mark bought</b> on a gift, it's saved here, even if the list is later changed or deleted.</p><a class="btn btn-small" href="/reservations">Go to your shopping list</a></div>
 {% else %}

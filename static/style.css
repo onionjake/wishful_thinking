@@ -279,6 +279,20 @@ legend { font-weight: 700; padding: 0 6px; }
 .invite { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 12px; }
 .invite p { margin: 6px 0 0; }
 
+/* Admin */
+.acting-bar { background: var(--warn-soft); border-bottom: 1px solid var(--line); }
+.acting-inner { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; padding-top: 8px; padding-bottom: 8px; flex-wrap: wrap; }
+.admin-table-wrap { overflow-x: auto; }
+.admin-table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+.admin-table th, .admin-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.admin-table th { color: var(--muted); font-weight: 700; font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; }
+.admin-table td.num, .admin-table th.num { text-align: right; }
+.admin-table form { margin: 0; }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.secret { font-family: ui-monospace, monospace; font-size: 1.1rem; user-select: all; }
+
 /* Reservation rows */
 .search-form { margin-bottom: 8px; flex-wrap: nowrap; }
 .search-form input { flex: 1; min-width: 0; width: auto; }

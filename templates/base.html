@@ -17,7 +17,7 @@
   <meta name="referrer" content="strict-origin-when-cross-origin">
   {% block head %}{% endblock %}
 </head>
-<body>
+<body{% if ctx.admin.is_some() %}{% if let Some(user) = ctx.user %} data-as="{{ user.id }}"{% endif %}{% endif %}>
   <header class="topbar">
     <div class="wrap topbar-inner">
       <a class="brand" href="/"><img src="/favicon.svg" alt="" width="28" height="28"> Wishful Thinking</a>
@@ -26,13 +26,18 @@
         <a href="/" class="{% if ctx.nav_active("/") %}active{% endif %}">Lists</a>
         <a href="/families" class="{% if ctx.nav_active("/families") %}active{% endif %}">Families</a>
         <a href="/reservations" class="{% if ctx.nav_active("/reservations") %}active{% endif %}">Shopping</a>
+        {% if ctx.admin.is_some() %}<a href="/admin" class="{% if ctx.nav_active("/admin") %}active{% endif %}">Admin</a>{% endif %}
         <details class="usermenu">
           <summary><span class="avatar">{{ ctx.initials() }}</span><span class="sr-only">Account menu</span></summary>
           <div class="menu">
             <div class="menu-head">{{ user.display_name }}<small>{{ user.email }}</small></div>
             <a href="/history">Gift history</a>
             <a href="/account">Account settings</a>
+            {% if ctx.is_acting() %}
+            <form method="post" action="/admin/stop"><button class="linklike" type="submit">Stop acting as {{ user.first_name() }}</button></form>
+            {% else %}
             <form method="post" action="/logout"><button class="linklike" type="submit">Sign out</button></form>
+            {% endif %}
           </div>
         </details>
       </nav>
@@ -44,6 +49,17 @@
       {% endif %}
     </div>
   </header>
+  {% if ctx.is_acting() %}{% if let Some(user) = ctx.user %}{% if let Some(admin) = ctx.admin %}
+  <div class="acting-bar" role="status">
+    <div class="wrap acting-inner">
+      <span>🛡️ <b>{{ admin.first_name() }}</b>, you're acting as <b>{{ user.display_name }}</b> ({{ user.email }}). Everything you do here is done as them.</span>
+      <span class="actions">
+        <a class="btn btn-small btn-ghost" href="/admin/users/{{ user.id }}">Admin view</a>
+        <form method="post" action="/admin/stop" class="inline"><button class="btn btn-small" type="submit">Stop acting</button></form>
+      </span>
+    </div>
+  </div>
+  {% endif %}{% endif %}{% endif %}
   {% if let Some(flash) = ctx.flash %}
   <div class="wrap"><div class="flash flash-{{ flash.kind }}" role="status">{{ flash.message }}</div></div>
   {% endif %}

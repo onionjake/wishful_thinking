@@ -10,7 +10,10 @@ use crate::importer::ImportOutcome;
 /// Data every page needs: who is signed in, a pending flash message, etc.
 #[derive(Clone, Debug, Default)]
 pub struct Ctx {
+    /// Who pages act as: the signed-in user, or the person an admin is acting on behalf of.
     pub user: Option<User>,
+    /// The signed-in user, when they're an admin (whoever they're acting as).
+    pub admin: Option<User>,
     pub flash: Option<Flash>,
     pub path: String,
     pub base_url: String,
@@ -23,6 +26,18 @@ impl Ctx {
             path: "/".into(),
             ..Default::default()
         }
+    }
+    /// An admin is acting as someone else.
+    pub fn is_acting(&self) -> bool {
+        match (&self.user, &self.admin) {
+            (Some(u), Some(a)) => u.id != a.id,
+            _ => false,
+        }
+    }
+    /// The admin, while they're acting as someone else. Pages they see as that person still keep
+    /// the admin's own surprises (reservations on lists the admin manages) hidden from them.
+    pub fn acting_admin(&self) -> Option<&User> {
+        self.admin.as_ref().filter(|_| self.is_acting())
     }
     pub fn is_signed_in(&self) -> bool {
         self.user.is_some()
@@ -487,6 +502,142 @@ pub struct AddPage {
     /// Came from the bookmarklet with page data in the URL fragment.
     pub clip: bool,
     pub lists: Vec<ListSummary>,
+}
+
+// ---------------------------------------------------------------- admin
+
+#[derive(Clone, Debug, sqlx::FromRow)]
+pub struct AdminUser {
+    pub id: i64,
+    pub email: String,
+    pub display_name: String,
+    pub is_admin: bool,
+    pub created_at: String,
+    pub list_count: i64,
+    pub wish_count: i64,
+    pub family_count: i64,
+    pub session_count: i64,
+    pub last_sign_in: Option<String>,
+}
+
+impl AdminUser {
+    pub fn joined(&self) -> String {
+        crate::util::pretty_date(self.created_at.get(..10).unwrap_or(&self.created_at))
+    }
+    pub fn last_sign_in_date(&self) -> Option<String> {
+        self.last_sign_in
+            .as_deref()
+            .map(|d| crate::util::pretty_date(d.get(..10).unwrap_or(d)))
+    }
+}
+
+#[derive(Clone, Debug, sqlx::FromRow)]
+pub struct AdminList {
+    pub id: i64,
+    pub title: String,
+    pub recipient_name: Option<String>,
+    pub event_date: Option<String>,
+    pub archived: bool,
+    pub public_token: Option<String>,
+    #[sqlx(skip)]
+    pub public_url: Option<String>,
+    pub show_claims_to_owner: bool,
+    pub owner_id: i64,
+    pub owner_name: String,
+    pub created_at: String,
+    pub open_count: i64,
+    pub received_count: i64,
+    pub family_names: Option<String>,
+    pub manager_names: Option<String>,
+}
+
+impl EventDate for AdminList {
+    fn event_date_str(&self) -> Option<&str> {
+        self.event_date.as_deref()
+    }
+}
+
+#[derive(Clone, Debug, sqlx::FromRow)]
+pub struct AdminInvite {
+    pub id: i64,
+    pub family_id: i64,
+    pub family_name: String,
+    pub token: String,
+    #[sqlx(skip)]
+    pub url: String,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+    pub uses: i64,
+    pub max_uses: Option<i64>,
+    pub revoked: bool,
+    pub active: bool,
+}
+
+#[derive(Clone, Debug, sqlx::FromRow)]
+pub struct AdminReservation {
+    pub id: i64,
+    pub item_title: String,
+    pub list_id: i64,
+    pub list_title: String,
+    pub recipient: String,
+    pub quantity: i64,
+    pub purchased: bool,
+    pub reveal_on: Option<String>,
+    pub created_at: String,
+}
+
+impl AdminInvite {
+    pub fn expires(&self) -> Option<String> {
+        self.expires_at
+            .as_deref()
+            .map(|d| crate::util::pretty_date(d.get(..10).unwrap_or(d)))
+    }
+}
+
+impl AdminReservation {
+    pub fn reveal_month(&self) -> Option<String> {
+        self.reveal_on
+            .as_deref()
+            .and_then(crate::util::parse_date)
+            .map(crate::util::pretty_month)
+    }
+}
+
+#[derive(Template)]
+#[template(path = "admin_users.html")]
+pub struct AdminUsersPage {
+    pub ctx: Ctx,
+    pub users: Vec<AdminUser>,
+    pub q: String,
+    pub total: i64,
+}
+
+#[derive(Template)]
+#[template(path = "admin_user.html")]
+pub struct AdminUserPage {
+    pub ctx: Ctx,
+    pub user: AdminUser,
+    pub lists: Vec<AdminList>,
+    pub families: Vec<FamilySummary>,
+    pub invites: Vec<AdminInvite>,
+    pub reservations: Vec<AdminReservation>,
+    pub gift_count: i64,
+}
+
+impl AdminUserPage {
+    pub fn is_me(&self) -> bool {
+        self.ctx
+            .admin
+            .as_ref()
+            .is_some_and(|a| a.id == self.user.id)
+    }
+    /// The admin's own account while acting as themselves: plain links will do.
+    pub fn direct_links(&self) -> bool {
+        self.is_me() && !self.ctx.is_acting()
+    }
+    pub fn acting_as_them(&self) -> bool {
+        self.ctx.is_acting() && self.ctx.is_user(&self.user.id)
+    }
 }
 
 #[cfg(test)]

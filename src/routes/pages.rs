@@ -14,11 +14,23 @@ pub async fn home(State(state): State<AppState>, ctx: Ctx) -> AppResult<Response
     let my_lists = db::lists_managed_by(&state.db, user.id).await?;
     let shared_lists = db::lists_shared_with(&state.db, user.id).await?;
     let families = db::families_for_user(&state.db, user.id).await?;
-    let reservation_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM claims WHERE user_id = ? AND purchased = 0")
-            .bind(user.id)
-            .fetch_one(&state.db)
-            .await?;
+    let open_claims: Vec<(i64, Option<String>)> = sqlx::query_as(
+        "SELECT i.wishlist_id, c.reveal_on FROM claims c JOIN items i ON i.id = c.item_id
+          WHERE c.user_id = ? AND c.purchased = 0",
+    )
+    .bind(user.id)
+    .fetch_all(&state.db)
+    .await?;
+    let mut reservation_count = 0;
+    for (list_id, reveal_on) in open_claims {
+        // An admin acting as someone doesn't count their own surprises.
+        if let Some(admin) = ctx.acting_admin() {
+            if db::claim_is_secret_from(&state.db, list_id, reveal_on.as_deref(), admin.id).await? {
+                continue;
+            }
+        }
+        reservation_count += 1;
+    }
     render(DashboardPage {
         ctx,
         my_lists,

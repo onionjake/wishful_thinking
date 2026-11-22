@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}{{ user.display_name }} · Admin · Wishful Thinking{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/admin">← All accounts</a></p>
+<div class="page-head">
+  <div>
+    <h1>{{ user.display_name }}{% if user.is_admin %} <span class="chip chip-date">Admin</span>{% endif %}</h1>
+    <p class="muted">{{ user.email }}</p>
+  </div>
+  <div class="actions">
+    {% if self.acting_as_them() %}
+    <form method="post" action="/admin/stop" class="inline"><button class="btn btn-ghost" type="submit">Stop acting as them</button></form>
+    {% else if !self.is_me() %}
+    <form method="post" action="/admin/users/{{ user.id }}/act" class="inline"><input type="hidden" name="next" value="/"><button class="btn" type="submit">Act as {{ user.display_name }}</button></form>
+    {% endif %}
+  </div>
+</div>
+
+
+<div class="two-col">
+  <section class="card">
+    <h2>Account</h2>
+    <dl class="facts">
+      <dt>Name</dt><dd>{{ user.display_name }}</dd>
+      <dt>Email</dt><dd>{{ user.email }}</dd>
+      <dt>Account id</dt><dd>{{ user.id }}</dd>
+      <dt>Joined</dt><dd>{{ user.joined() }}</dd>
+      <dt>Admin</dt><dd>{% if user.is_admin %}Yes{% else %}No{% endif %} <span class="muted small">(only changed in the database)</span></dd>
+      <dt>Signed in on</dt><dd>{{ user.session_count }} device{% if user.session_count != 1 %}s{% endif %}{% if let Some(d) = user.last_sign_in_date() %}, most recently {{ d }}{% endif %}</dd>
+      <dt>Gift history</dt><dd>{{ gift_count }} gift{% if gift_count != 1 %}s{% endif %} bought</dd>
+    </dl>
+    {% if !self.is_me() %}
+    <div class="actions" style="margin-top:16px">
+      <form method="post" action="/admin/users/{{ user.id }}/act" class="inline"><input type="hidden" name="next" value="/account"><button class="btn btn-small btn-ghost" type="submit">Edit name or email</button></form>
+      <form method="post" action="/admin/users/{{ user.id }}/reset-password" class="inline" data-confirm="Give {{ user.display_name }} a new random password? This signs them out everywhere."><button class="btn btn-small btn-ghost" type="submit">Reset password</button></form>
+      <form method="post" action="/admin/users/{{ user.id }}/sign-out" class="inline" data-confirm="Sign {{ user.display_name }} out on every device?"><button class="btn btn-small btn-danger" type="submit">Sign out everywhere</button></form>
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Families</h2>
+    {% if families.is_empty() %}<p class="muted">Not in any family.</p>{% else %}
+    <ul class="people">
+      {% for f in families %}
+      <li>
+        <span class="grow"><b>{{ f.name }}</b>{% if f.role == "owner" %} <span class="chip chip-small chip-date">Organizer</span>{% endif %}<br><span class="muted small">{{ f.member_count }} member{% if f.member_count != 1 %}s{% endif %} · {{ f.list_count }} list{% if f.list_count != 1 %}s{% endif %}</span></span>
+        {% if !self.direct_links() %}<form method="post" action="/admin/users/{{ user.id }}/act"><input type="hidden" name="next" value="/families/{{ f.id }}"><button class="btn btn-small btn-ghost" type="submit">Open as them</button></form>{% else %}<a class="btn btn-small btn-ghost" href="/families/{{ f.id }}">Open</a>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+</div>
+
+<h2 class="section-title">Lists they own or co-manage</h2>
+{% if lists.is_empty() %}<div class="empty-card"><p>No lists.</p></div>{% else %}
+<div class="card admin-table-wrap">
+  <table class="admin-table">
+    <thead><tr><th>List</th><th class="num">Open</th><th class="num">Received</th><th>Shared with</th><th>Public link</th><th>Co-managers</th><th></th></tr></thead>
+    <tbody>
+      {% for l in lists %}
+      <tr>
+        <td>
+          <b>{{ l.title }}</b>{% if l.archived %} <span class="chip chip-small chip-muted">Archived</span>{% endif %}
+          {% if l.owner_id != user.id %}<br><span class="muted small">Co-manages {{ l.owner_name }}'s list</span>{% endif %}
+          {% if let Some(r) = l.recipient_name %}<br><span class="muted small">For {{ r }}</span>{% endif %}
+          {% if let Some(d) = l.pretty_event_date() %}<br><span class="muted small">{{ d }}</span>{% endif %}
+          <br><span class="muted small">Owner {% if l.show_claims_to_owner %}sees{% else %}doesn't see{% endif %} reservations</span>
+        </td>
+        <td class="num">{{ l.open_count }}</td>
+        <td class="num">{{ l.received_count }}</td>
+        <td>{% if let Some(f) = l.family_names %}{{ f }}{% else %}<span class="muted">No families</span>{% endif %}</td>
+        <td>{% if let Some(u) = l.public_url %}<a href="{{ u }}" class="small" style="overflow-wrap:anywhere">{{ u }}</a>{% else %}<span class="muted">Off</span>{% endif %}</td>
+        <td>{% if let Some(m) = l.manager_names %}{{ m }}{% else %}<span class="muted">None</span>{% endif %}</td>
+        <td>
+          {% if self.direct_links() %}
+          <a class="btn btn-small btn-ghost" href="/lists/{{ l.id }}">Open</a>
+          {% else %}
+          <div class="actions">
+            <form method="post" action="/admin/users/{{ user.id }}/act"><input type="hidden" name="next" value="/lists/{{ l.id }}"><button class="btn btn-small btn-ghost" type="submit">Open as them</button></form>
+            <form method="post" action="/admin/users/{{ user.id }}/act"><input type="hidden" name="next" value="/lists/{{ l.id }}/share"><button class="btn btn-small btn-ghost" type="submit">Sharing</button></form>
+          </div>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="muted small">Who reserved what on these lists isn't shown here. Act as them to see their lists exactly as they do.</p>
+{% endif %}
+
+<h2 class="section-title">Invite links they made</h2>
+{% if invites.is_empty() %}<div class="empty-card"><p>No invite links.</p></div>{% else %}
+<div class="card admin-table-wrap">
+  <table class="admin-table">
+    <thead><tr><th>Family</th><th>Link</th><th>Status</th><th>Uses</th><th>Expires</th></tr></thead>
+    <tbody>
+      {% for i in invites %}
+      <tr>
+        <td>{{ i.family_name }}</td>
+        <td><span class="small" style="overflow-wrap:anywhere">{{ i.url }}</span></td>
+        <td>{% if i.revoked %}<span class="chip chip-small chip-muted">Revoked</span>{% else if i.active %}<span class="pill pill-ok">Active</span>{% else %}<span class="chip chip-small chip-muted">Used up or expired</span>{% endif %}</td>
+        <td>{{ i.uses }}{% if let Some(m) = i.max_uses %} of {{ m }}{% endif %}</td>
+        <td>{% if let Some(e) = i.expires() %}{{ e }}{% else %}Never{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<h2 class="section-title">Gifts they've reserved</h2>
+{% if !self.is_me() %}<p class="hint">🤫 Reservations that could be a surprise for you (on lists you manage without seeing reservations) are left out.</p>{% endif %}
+{% if reservations.is_empty() %}<div class="empty-card"><p>No reservations to show.</p></div>{% else %}
+<div class="card admin-table-wrap">
+  <table class="admin-table">
+    <thead><tr><th>Gift</th><th>For</th><th>List</th><th class="num">Qty</th><th>Status</th><th>Owner finds out</th></tr></thead>
+    <tbody>
+      {% for r in reservations %}
+      <tr>
+        <td>{{ r.item_title }}</td>
+        <td>{{ r.recipient }}</td>
+        <td>{{ r.list_title }}</td>
+        <td class="num">{{ r.quantity }}</td>
+        <td>{% if r.purchased %}<span class="pill pill-ok">Bought</span>{% else %}To buy{% endif %}</td>
+        <td>{% if let Some(m) = r.reveal_month() %}{{ m }}{% else %}<span class="muted">Never</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% if !self.is_me() %}
+<div class="actions">
+  <form method="post" action="/admin/users/{{ user.id }}/act" class="inline"><input type="hidden" name="next" value="/reservations"><button class="btn btn-small btn-ghost" type="submit">Open their shopping list</button></form>
+  <form method="post" action="/admin/users/{{ user.id }}/act" class="inline"><input type="hidden" name="next" value="/history"><button class="btn btn-small btn-ghost" type="submit">Open their gift history</button></form>
+</div>
+{% endif %}
+{% endblock %}

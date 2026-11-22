@@ -519,6 +519,79 @@ pub async fn sees_claims(
     })
 }
 
+/// Whether this user manages the list and has chosen not to see its reservations.
+pub async fn claims_hidden_from(db: &Db, list_id: i64, user_id: i64) -> sqlx::Result<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM wishlists w WHERE w.id = ?1 AND (
+             (w.owner_id = ?2 AND w.show_claims_to_owner = 0)
+             OR EXISTS (SELECT 1 FROM wishlist_managers m
+                         WHERE m.wishlist_id = w.id AND m.user_id = ?2 AND m.sees_claims = 0)))",
+    )
+    .bind(list_id)
+    .bind(user_id)
+    .fetch_one(db)
+    .await
+}
+
+/// Whether a reservation on a list would spoil a surprise for `user_id`: they manage the list
+/// without seeing reservations, and the giver's reveal month hasn't come.
+pub async fn claim_is_secret_from(
+    db: &Db,
+    list_id: i64,
+    reveal_on: Option<&str>,
+    user_id: i64,
+) -> sqlx::Result<bool> {
+    Ok(!util::is_revealed(reveal_on) && claims_hidden_from(db, list_id, user_id).await?)
+}
+
+#[derive(FromRow)]
+struct GiftOrigin {
+    id: i64,
+    list_id: Option<i64>,
+    has_claim: bool,
+    reveal_on: Option<String>,
+    list_exists: bool,
+}
+
+/// Gifts in `buyer_id`'s history that could spoil a surprise for `viewer_id`: still a secret
+/// reservation on a list the viewer manages, or bought from such a list after the reservation
+/// went (wish deleted or moved). Gifts from a list that no longer exists can't be checked, so
+/// they count as secret too. A list is matched by id and creation time, since SQLite may give a
+/// deleted list's id to a new one.
+pub async fn gifts_secret_from(
+    db: &Db,
+    buyer_id: i64,
+    viewer_id: i64,
+) -> sqlx::Result<std::collections::HashSet<i64>> {
+    let rows: Vec<GiftOrigin> = sqlx::query_as(
+        "SELECT g.id, COALESCE(i.wishlist_id, g.wishlist_id) AS list_id, c.id IS NOT NULL AS has_claim,
+                c.reveal_on,
+                (i.wishlist_id IS NOT NULL OR EXISTS (SELECT 1 FROM wishlists w
+                   WHERE w.id = g.wishlist_id AND w.created_at = g.wishlist_created_at)) AS list_exists
+           FROM gift_history g LEFT JOIN claims c ON c.id = g.claim_id
+           LEFT JOIN items i ON i.id = c.item_id
+          WHERE g.buyer_id = ?",
+    )
+    .bind(buyer_id)
+    .fetch_all(db)
+    .await?;
+    let mut secret = std::collections::HashSet::new();
+    for g in rows {
+        let hide = match g.list_id {
+            Some(list_id) if g.has_claim => {
+                claim_is_secret_from(db, list_id, g.reveal_on.as_deref(), viewer_id).await?
+            }
+            // The reservation is gone, and its reveal month with it.
+            Some(list_id) if g.list_exists => claims_hidden_from(db, list_id, viewer_id).await?,
+            _ => true,
+        };
+        if hide {
+            secret.insert(g.id);
+        }
+    }
+    Ok(secret)
+}
+
 /// Whether reservations are hidden from anyone who manages the list, so gift-givers pick the
 /// month that person may find out.
 pub async fn has_secret_reservations(db: &Db, list: &Wishlist) -> sqlx::Result<bool> {

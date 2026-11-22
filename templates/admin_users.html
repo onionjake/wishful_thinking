@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Admin · Wishful Thinking{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Admin</h1><p class="muted">{{ total }} account{% if total != 1 %}s{% endif %}. Open one to see everything about it, or act as them to do anything they could do.</p></div>
+</div>
+<form method="get" action="/admin" class="inline-form search-form">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search by name or email" aria-label="Search accounts">
+  <button class="btn btn-small" type="submit">Search</button>
+  {% if !q.is_empty() %}<a class="small" href="/admin">Clear</a>{% endif %}
+</form>
+{% if users.is_empty() %}
+<div class="empty-card"><p>No accounts match “{{ q }}”.</p></div>
+{% else %}
+<div class="card admin-table-wrap">
+  <table class="admin-table">
+    <thead><tr><th>Name</th><th>Email</th><th class="num">Lists</th><th class="num">Open wishes</th><th class="num">Families</th><th>Joined</th><th>Last sign-in</th><th></th></tr></thead>
+    <tbody>
+      {% for u in users %}
+      <tr>
+        <td><a href="/admin/users/{{ u.id }}"><b>{{ u.display_name }}</b></a>{% if u.is_admin %} <span class="chip chip-small chip-date">Admin</span>{% endif %}</td>
+        <td>{{ u.email }}</td>
+        <td class="num">{{ u.list_count }}</td>
+        <td class="num">{{ u.wish_count }}</td>
+        <td class="num">{{ u.family_count }}</td>
+        <td>{{ u.joined() }}</td>
+        <td>{% if let Some(d) = u.last_sign_in_date() %}{{ d }}{% else %}<span class="muted">signed out</span>{% endif %}</td>
+        <td>
+          <form method="post" action="/admin/users/{{ u.id }}/act"><input type="hidden" name="next" value="/"><button class="btn btn-small btn-ghost" type="submit">Act as</button></form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% if users.len() == 500 %}<p class="muted small">Showing the first 500. Search to narrow it down.</p>{% endif %}
+{% endif %}
+{% endblock %}

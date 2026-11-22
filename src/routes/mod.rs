@@ -1,4 +1,5 @@
 mod account;
+mod admin;
 mod families;
 mod items;
 mod lists;
@@ -108,6 +109,19 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/families/{id}/leave", post(families::leave_family))
         .route("/families/{id}/delete", post(families::delete_family))
+        // admin
+        .route("/admin", get(admin::users_page))
+        .route("/admin/users/{id}", get(admin::user_page))
+        .route("/admin/users/{id}/act", post(admin::act_as))
+        .route(
+            "/admin/users/{id}/reset-password",
+            post(admin::reset_password),
+        )
+        .route(
+            "/admin/users/{id}/sign-out",
+            post(admin::sign_out_everywhere),
+        )
+        .route("/admin/stop", post(admin::stop_acting))
         .route(
             "/join/{token}",
             get(families::join_page).post(families::join),

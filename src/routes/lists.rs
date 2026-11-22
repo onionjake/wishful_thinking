@@ -382,7 +382,13 @@ pub async fn build_list_page(
     let is_editor = access.can_edit();
     // The owner and co-managers each choose whether they see reservations (a parent running a
     // child's list does; the child, as a co-manager, doesn't).
-    let claims_visible = db::sees_claims(&state.db, &list, access, me).await?;
+    let mut claims_visible = db::sees_claims(&state.db, &list, access, me).await?;
+    // An admin acting as someone sees what they see, except the admin's own surprises.
+    if let Some(admin) = ctx.acting_admin() {
+        if db::claims_hidden_from(&state.db, list.id, admin.id).await? {
+            claims_visible = false;
+        }
+    }
     let secret_reservations = db::has_secret_reservations(&state.db, &list).await?;
     let claim_names_visible = claims_visible && (access != Access::None);
     let can_claim = claims_visible && (me.is_some() || public_view);
@@ -702,6 +708,12 @@ pub async fn set_sees_claims(
     Path((id, uid)): Path<(i64, i64)>,
     Form(f): Form<SeesClaimsForm>,
 ) -> AppResult<Response> {
+    // An admin acting as the owner mustn't uncover their own surprises this way.
+    if f.sees_claims == "1" && ctx.acting_admin().is_some_and(|a| a.id == uid) {
+        return Err(AppError::BadRequest(
+            "That's you. You're acting as someone else, so this would show you your own surprises. Stop acting and change it as yourself.".into(),
+        ));
+    }
     let (list, access, user) = editable_list(&state, &ctx, id).await?;
     let sees = f.sees_claims == "1";
     let is_owner = access == Access::Owner;
@@ -741,6 +753,12 @@ pub async fn remove_manager(
     ctx: Ctx,
     Path((id, uid)): Path<(i64, i64)>,
 ) -> AppResult<Response> {
+    // An admin acting as the owner mustn't uncover their own surprises this way.
+    if ctx.acting_admin().is_some_and(|a| a.id == uid) {
+        return Err(AppError::BadRequest(
+            "That's you. You're acting as someone else, so this would show you your own surprises. Stop acting and change it as yourself.".into(),
+        ));
+    }
     let (_, access, user) = editable_list(&state, &ctx, id).await?;
     // Owners can remove anyone; a manager can remove themselves.
     if access != Access::Owner && user.id != uid {

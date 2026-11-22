@@ -135,18 +135,98 @@ pub async fn end_session(state: &AppState, headers: &HeaderMap) -> AppResult<Hea
     ))
 }
 
-async fn user_for_session(db: &Db, token: &str) -> sqlx::Result<Option<User>> {
+/// Who a session belongs to, and (for an admin acting on someone's behalf) who it acts as.
+#[derive(sqlx::FromRow)]
+struct SessionRow {
+    id: i64,
+    email: String,
+    display_name: String,
+    is_admin: bool,
+    acting_as: Option<i64>,
+    acting_id: Option<i64>,
+    acting_email: Option<String>,
+    acting_display_name: Option<String>,
+}
+
+/// The user pages act as, and the signed-in admin (if the session's own user is one).
+async fn users_for_session(db: &Db, token: &str) -> sqlx::Result<(Option<User>, Option<User>)> {
     let now = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default();
-    sqlx::query_as::<_, User>(
-        "SELECT u.id, u.email, u.display_name FROM sessions s JOIN users u ON u.id = s.user_id
+    let row = sqlx::query_as::<_, SessionRow>(
+        "SELECT u.id, u.email, u.display_name, u.is_admin, s.acting_as,
+                a.id AS acting_id, a.email AS acting_email, a.display_name AS acting_display_name
+           FROM sessions s JOIN users u ON u.id = s.user_id
+           LEFT JOIN users a ON a.id = s.acting_as AND u.is_admin = 1
           WHERE s.token_hash = ? AND s.expires_at > ?",
     )
     .bind(util::sha256_hex(token))
     .bind(now)
     .fetch_optional(db)
-    .await
+    .await?;
+    let Some(row) = row else {
+        return Ok((None, None));
+    };
+    if !row.is_admin && row.acting_as.is_some() {
+        // No longer an admin: forget who they were acting as, so it can't come back if the
+        // flag is ever set again.
+        sqlx::query("UPDATE sessions SET acting_as = NULL WHERE token_hash = ?")
+            .bind(util::sha256_hex(token))
+            .execute(db)
+            .await?;
+    }
+    let me = User {
+        id: row.id,
+        email: row.email,
+        display_name: row.display_name,
+    };
+    let acting = match (row.acting_id, row.acting_email, row.acting_display_name) {
+        (Some(id), Some(email), Some(display_name)) => Some(User {
+            id,
+            email,
+            display_name,
+        }),
+        _ => None,
+    };
+    Ok(match (row.is_admin, acting) {
+        (true, Some(acting)) => (Some(acting), Some(me)),
+        (true, None) => (Some(me.clone()), Some(me)),
+        (false, _) => (Some(me), None),
+    })
+}
+
+/// Make the admin's current session act as `user_id`, or as themselves again with `None`.
+pub async fn set_acting_as(
+    state: &AppState,
+    headers: &HeaderMap,
+    admin_id: i64,
+    user_id: Option<i64>,
+) -> AppResult<()> {
+    let token = read_cookie(headers, SESSION_COOKIE).ok_or(AppError::Forbidden)?;
+    sqlx::query("UPDATE sessions SET acting_as = ? WHERE token_hash = ? AND user_id = ?")
+        .bind(user_id.filter(|id| *id != admin_id))
+        .bind(util::sha256_hex(&token))
+        .bind(admin_id)
+        .execute(&state.db)
+        .await?;
+    Ok(())
+}
+
+/// Query parameter (forms) and header (`fetch`) naming the user an admin's page was shown as.
+pub const PAGE_USER_PARAM: &str = "wt_as";
+pub const PAGE_USER_HEADER: &str = "x-wt-as";
+
+fn page_user(parts: &Parts) -> Option<String> {
+    if let Some(v) = parts
+        .headers
+        .get(PAGE_USER_HEADER)
+        .and_then(|v| v.to_str().ok())
+    {
+        return Some(v.to_string());
+    }
+    url::form_urlencoded::parse(parts.uri.query()?.as_bytes())
+        .find(|(k, _)| k == PAGE_USER_PARAM)
+        .map(|(_, v)| v.into_owned())
 }
 
 impl FromRequestParts<AppState> for Ctx {
@@ -156,9 +236,9 @@ impl FromRequestParts<AppState> for Ctx {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let user = match read_cookie(&parts.headers, SESSION_COOKIE) {
-            Some(token) => user_for_session(&state.db, &token).await?,
-            None => None,
+        let (user, admin) = match read_cookie(&parts.headers, SESSION_COOKIE) {
+            Some(token) => users_for_session(&state.db, &token).await?,
+            None => (None, None),
         };
         let flash = read_cookie(&parts.headers, FLASH_COOKIE).and_then(|raw| Flash::decode(&raw));
         let path = parts
@@ -179,8 +259,33 @@ impl FromRequestParts<AppState> for Ctx {
             };
             format!("{scheme}://{host}")
         });
+        if let (Some(user), Some(admin)) = (&user, &admin) {
+            let changes = parts.method != Method::GET && parts.method != Method::HEAD;
+            // An admin's pages say whose page they are (app.js adds it to every form post and
+            // import call). If the admin has since started or stopped acting as someone in
+            // another tab, refuse rather than do it as the wrong person.
+            if changes && !parts.uri.path().starts_with("/admin/") {
+                if let Some(page_user) = page_user(parts) {
+                    if page_user != user.id.to_string() {
+                        return Err(AppError::BadRequest(
+                            "This page was opened as someone other than the person you're acting as now (it changed in another tab). Nothing was changed: reload the page and try again.".into(),
+                        ));
+                    }
+                }
+            }
+            if user.id != admin.id && changes {
+                tracing::info!(
+                    admin_id = admin.id,
+                    acting_as = user.id,
+                    method = %parts.method,
+                    path = %path,
+                    "admin acting on a user's behalf"
+                );
+            }
+        }
         Ok(Ctx {
             user,
+            admin,
             flash,
             path,
             base_url,
@@ -195,6 +300,13 @@ impl Ctx {
         self.user
             .as_ref()
             .ok_or_else(|| AppError::LoginRequired(self.path.clone()))
+    }
+
+    /// The signed-in admin (themselves, not whoever they're acting as). Anyone else gets a
+    /// plain "not found", so the admin pages don't advertise themselves.
+    pub fn require_admin(&self) -> AppResult<&User> {
+        self.require_user()?;
+        self.admin.as_ref().ok_or(AppError::NotFound)
     }
 }
 

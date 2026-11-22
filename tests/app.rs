@@ -2298,3 +2298,406 @@ async fn one_person_can_own_at_most_50_lists() {
         StatusCode::SEE_OTHER
     );
 }
+
+#[tokio::test]
+async fn admins_can_see_and_act_for_any_account() {
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
+    let mut admin = Client::new(&app);
+    admin.signup("Ada Admin", "ada@example.com").await;
+    let mut sam = Client::new(&app);
+    sam.signup("Sam Smith", "sam@example.com").await;
+    let r = sam.post("/lists", &[("title", "Sam's Birthday")]).await;
+    let list_id = id_from_location(r.location.as_deref().unwrap(), "/lists/");
+    sam.post(&format!("/lists/{list_id}/public"), &[("action", "enable")])
+        .await;
+    let sam_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = 'sam@example.com'")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+
+    // Until the flag is set by hand, the admin pages don't exist for anyone.
+    assert_eq!(admin.get("/admin").await.status, StatusCode::NOT_FOUND);
+    assert!(!admin.get("/").await.body.contains("href=\"/admin\""));
+    let r = admin
+        .post(&format!("/admin/users/{sam_id}/act"), &[("next", "/")])
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        Client::new(&app).get("/admin").await.status,
+        StatusCode::SEE_OTHER
+    );
+    // Profile edits can't make someone an admin.
+    admin
+        .post(
+            "/account",
+            &[
+                ("display_name", "Ada Admin"),
+                ("email", "ada@example.com"),
+                ("is_admin", "1"),
+            ],
+        )
+        .await;
+    assert_eq!(admin.get("/admin").await.status, StatusCode::NOT_FOUND);
+
+    sqlx::query("UPDATE users SET is_admin = 1 WHERE email = 'ada@example.com'")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let page = admin.get("/admin").await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.body.contains("Sam Smith") && page.body.contains("sam@example.com"));
+    assert!(admin.get("/admin?q=SAM").await.body.contains("Sam Smith"));
+    assert!(!admin
+        .get("/admin?q=nobody")
+        .await
+        .body
+        .contains("Sam Smith"));
+    let detail = admin.get(&format!("/admin/users/{sam_id}")).await.body;
+    assert!(detail.contains("Sam&#x27;s Birthday") || detail.contains("Sam's Birthday"));
+    assert!(
+        detail.contains("http://wishful.test/p/"),
+        "public link shown"
+    );
+    // Non-admins still can't.
+    assert_eq!(sam.get("/admin").await.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        sam.get(&format!("/admin/users/{sam_id}")).await.status,
+        StatusCode::NOT_FOUND
+    );
+
+    // Acting as Sam: their pages, their actions.
+    let r = admin
+        .post(
+            &format!("/admin/users/{sam_id}/act"),
+            &[("next", &format!("/lists/{list_id}"))],
+        )
+        .await;
+    assert_eq!(
+        r.location.as_deref(),
+        Some(format!("/lists/{list_id}").as_str())
+    );
+    let page = admin.get(&format!("/lists/{list_id}")).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.body.contains("you&#x27;re acting as") || page.body.contains("you're acting as"));
+    let r = admin
+        .post(
+            &format!("/lists/{list_id}/items"),
+            &[("title", "Kite"), ("priority", "2"), ("quantity", "1")],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER, "{}", r.body);
+    assert!(sam
+        .get(&format!("/lists/{list_id}"))
+        .await
+        .body
+        .contains("Kite"));
+    let item_id: i64 = sqlx::query_scalar("SELECT id FROM items WHERE title = 'Kite'")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    admin
+        .post(
+            &format!("/items/{item_id}/edit"),
+            &[("title", "Red kite"), ("priority", "1"), ("quantity", "2")],
+        )
+        .await;
+    assert!(sam
+        .get(&format!("/lists/{list_id}"))
+        .await
+        .body
+        .contains("Red kite"));
+    admin
+        .post(
+            "/account",
+            &[
+                ("display_name", "Samuel Smith"),
+                ("email", "sam@example.com"),
+            ],
+        )
+        .await;
+    assert!(sam.get("/account").await.body.contains("Samuel Smith"));
+    // The admin's own account is untouched.
+    let ada: String =
+        sqlx::query_scalar("SELECT display_name FROM users WHERE email = 'ada@example.com'")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(ada, "Ada Admin");
+    admin.post(&format!("/items/{item_id}/delete"), &[]).await;
+    assert!(!sam
+        .get(&format!("/lists/{list_id}"))
+        .await
+        .body
+        .contains("Red kite"));
+
+    // Taking the flag away ends acting at once.
+    sqlx::query("UPDATE users SET is_admin = 0 WHERE email = 'ada@example.com'")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    assert!(admin.get("/").await.body.contains("Ada Admin"));
+    assert_eq!(
+        admin.get(&format!("/lists/{list_id}")).await.status,
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("UPDATE users SET is_admin = 1 WHERE email = 'ada@example.com'")
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    // Stopping goes back to the admin page for Sam.
+    admin
+        .post(&format!("/admin/users/{sam_id}/act"), &[("next", "/")])
+        .await;
+    let r = admin.post("/admin/stop", &[]).await;
+    assert_eq!(
+        r.location.as_deref(),
+        Some(format!("/admin/users/{sam_id}").as_str())
+    );
+    assert!(admin.get("/").await.body.contains("Ada Admin"));
+
+    // Reset password shows a new one once and signs Sam out; the admin stays signed in.
+    let r = admin
+        .post(&format!("/admin/users/{sam_id}/reset-password"), &[])
+        .await;
+    assert_eq!(
+        r.location,
+        Some(format!("/admin/users/{sam_id}")),
+        "redirects, so a reload can't reset it again"
+    );
+    let shown = admin.get(&format!("/admin/users/{sam_id}")).await.body;
+    assert!(shown.contains("New password for sam@example.com"));
+    assert!(
+        !admin
+            .get(&format!("/admin/users/{sam_id}"))
+            .await
+            .body
+            .contains("New password for"),
+        "shown once"
+    );
+    assert!(sam.get("/").await.body.contains("Start a wish list"));
+    assert!(admin.get("/").await.body.contains("Ada Admin"));
+    let mut sam = Client::new(&app);
+    sam.post(
+        "/login",
+        &[("email", "sam@example.com"), ("password", "correct horse")],
+    )
+    .await;
+    let r = admin
+        .post(&format!("/admin/users/{sam_id}/sign-out"), &[])
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    // Admins can't lock themselves out from here.
+    let ada_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = 'ada@example.com'")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    let r = admin
+        .post(&format!("/admin/users/{ada_id}/sign-out"), &[])
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(admin.get("/").await.body.contains("Ada Admin"));
+}
+
+async fn make_admin(state: &AppState, email: &str) -> i64 {
+    sqlx::query_scalar("UPDATE users SET is_admin = 1 WHERE email = ? RETURNING id")
+        .bind(email)
+        .fetch_one(&state.db)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn acting_admins_keep_their_own_surprises() {
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
+    // Grandpa Joe is the admin; Mom reserves a gift on his list and buys it.
+    let (mut joe, mut mom, list_id, item_id) = family_with_item(&app).await;
+    mom.post(
+        &format!("/items/{item_id}/claim"),
+        &[("reveal_month", &format!("{}-01", year_from_now(1)))],
+    )
+    .await;
+    let claim = claim_id(&mom.get("/reservations").await.body);
+    mom.post(&format!("/claims/{claim}/purchased"), &[]).await;
+    make_admin(&state, "joe@example.com").await;
+    let mom_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = 'mom@example.com'")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+
+    let detail = joe.get(&format!("/admin/users/{mom_id}")).await.body;
+    assert!(!detail.contains("Fishing rod"), "{detail}");
+    assert!(detail.contains("could be a surprise for you"));
+
+    joe.post(&format!("/admin/users/{mom_id}/act"), &[("next", "/")])
+        .await;
+    let list = joe.get(&format!("/lists/{list_id}")).await.body;
+    assert!(list.contains("Fishing rod"));
+    assert!(!list.contains("Reserved by"), "{list}");
+    assert!(
+        !list.contains(&format!("/claims/{claim}/")),
+        "her reservation stays hidden"
+    );
+    // Not even by posting a reservation by hand.
+    let r = joe
+        .post(
+            &format!("/items/{item_id}/claim"),
+            &[("reveal_month", &format!("{}-01", year_from_now(1)))],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    let shopping = joe.get("/reservations").await.body;
+    assert!(!shopping.contains("Fishing rod"), "{shopping}");
+    assert!(shopping.contains("could be a surprise for you"));
+    let history = joe.get("/history").await.body;
+    assert!(!history.contains("Fishing rod"), "{history}");
+    assert!(history.contains("could be a surprise for you"));
+    // Mom herself still sees it all.
+    assert!(mom.get("/reservations").await.body.contains("Fishing rod"));
+    assert!(mom.get("/history").await.body.contains("Fishing rod"));
+
+    // Acting as the list's owner can't be used to uncover them.
+    joe.post("/admin/stop", &[]).await;
+    let mut kid = Client::new(&app);
+    kid.signup("Kid", "kid@example.com").await;
+    let kid_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = 'kid@example.com'")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    let joe_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = 'joe@example.com'")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    let r = kid.post("/lists", &[("title", "Kid's list")]).await;
+    let kid_list = id_from_location(r.location.as_deref().unwrap(), "/lists/");
+    sqlx::query(
+        "INSERT INTO wishlist_managers (wishlist_id, user_id, sees_claims) VALUES (?, ?, 0)",
+    )
+    .bind(kid_list)
+    .bind(joe_id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    joe.post(&format!("/admin/users/{kid_id}/act"), &[]).await;
+    for (path, form) in [
+        (
+            format!("/lists/{kid_list}/managers/{joe_id}/claims"),
+            vec![("sees_claims", "1")],
+        ),
+        (
+            format!("/lists/{kid_list}/managers/{joe_id}/remove"),
+            vec![],
+        ),
+    ] {
+        let r = joe.post(&path, &form).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{path}");
+    }
+    assert!(sqlx::query_scalar::<_, bool>(
+        "SELECT sees_claims = 0 FROM wishlist_managers WHERE wishlist_id = ? AND user_id = ?"
+    )
+    .bind(kid_list)
+    .bind(joe_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap());
+    joe.post("/admin/stop", &[]).await;
+
+    // Once the wish is deleted the reservation goes, but the gift stays hidden from Joe.
+    joe.post(&format!("/items/{item_id}/delete"), &[]).await;
+    joe.post(&format!("/admin/users/{mom_id}/act"), &[]).await;
+    let history = joe.get("/history").await.body;
+    assert!(!history.contains("Fishing rod"), "{history}");
+    // And from a list that's gone, where it can't be checked.
+    joe.post("/admin/stop", &[]).await;
+    joe.post(&format!("/lists/{list_id}/delete"), &[]).await;
+    joe.post(&format!("/admin/users/{mom_id}/act"), &[]).await;
+    assert!(!joe.get("/history").await.body.contains("Fishing rod"));
+    assert!(mom.get("/history").await.body.contains("Fishing rod"));
+    // Even once SQLite hands the deleted list's id to a new list Joe doesn't manage.
+    let r = mom.post("/lists", &[("title", "Mom's list")]).await;
+    let reused = id_from_location(r.location.as_deref().unwrap(), "/lists/");
+    // (A real reuse comes later; here both lists may share a creation second.)
+    sqlx::query("UPDATE wishlists SET id = ?, created_at = '2099-01-01 00:00:00' WHERE id = ?")
+        .bind(list_id)
+        .bind(reused)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    assert!(!joe.get("/history").await.body.contains("Fishing rod"));
+}
+
+#[tokio::test]
+async fn a_stale_tab_cannot_act_as_the_wrong_person() {
+    let state = AppState::new(Config::for_tests()).await.unwrap();
+    let app = app(state.clone());
+    let mut admin = Client::new(&app);
+    admin.signup("Ada Admin", "ada@example.com").await;
+    let ada_id = make_admin(&state, "ada@example.com").await;
+    let mut sam = Client::new(&app);
+    sam.signup("Sam Smith", "sam@example.com").await;
+    let mut bob = Client::new(&app);
+    bob.signup("Bob Jones", "bob@example.com").await;
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM users WHERE email IN ('sam@example.com', 'bob@example.com') ORDER BY email DESC",
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap();
+    let (sam_id, bob_id) = (ids[0], ids[1]);
+
+    // Pages say whose they are, for app.js to send back.
+    admin.post(&format!("/admin/users/{sam_id}/act"), &[]).await;
+    assert!(admin
+        .get("/")
+        .await
+        .body
+        .contains(&format!("data-as=\"{sam_id}\"")));
+    assert!(!sam.get("/").await.body.contains("data-as="));
+
+    // A tab opened as Sam, after switching to Bob in another one.
+    admin.post(&format!("/admin/users/{bob_id}/act"), &[]).await;
+    let r = admin
+        .post(&format!("/lists?wt_as={sam_id}"), &[("title", "Oops")])
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(r.body.contains("reload the page"));
+    // A tab opened as the admin themselves.
+    let r = admin
+        .post(&format!("/lists?wt_as={ada_id}"), &[("title", "Oops")])
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let none: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM wishlists")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(none, 0);
+    // The right tab works.
+    let r = admin
+        .post(
+            &format!("/lists?wt_as={bob_id}"),
+            &[("title", "Bob's list")],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    let owner: i64 = sqlx::query_scalar("SELECT owner_id FROM wishlists")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(owner, bob_id);
+
+    // Losing the flag forgets who they were acting as, so it can't come back later, even
+    // with no request in between.
+    sqlx::query("UPDATE users SET is_admin = 0 WHERE id = ?")
+        .bind(ada_id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    make_admin(&state, "ada@example.com").await;
+    let home = admin.get("/").await.body;
+    assert!(
+        home.contains("Ada Admin") && !home.contains("acting as"),
+        "{home}"
+    );
+}

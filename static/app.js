@@ -7,6 +7,19 @@
     navigator.serviceWorker.register("/sw.js").catch(function () {});
   }
 
+  // For admins: say whose page this is on every change, so a tab left open from before they
+  // started or stopped acting as someone can't do it as the wrong person (see src/auth.rs).
+  var pageUser = document.body.dataset.as;
+  if (pageUser) {
+    document.addEventListener("submit", function (e) {
+      var form = e.target;
+      if ((form.getAttribute("method") || "").toLowerCase() !== "post") return;
+      var url = new URL(form.getAttribute("action") || location.href, location.href);
+      url.searchParams.set("wt_as", pageUser);
+      form.setAttribute("action", url.pathname + url.search + url.hash);
+    }, true);
+  }
+
   // Confirmation prompts on destructive forms.
   document.querySelectorAll("form[data-confirm]").forEach(function (form) {
     form.addEventListener("submit", function (e) {
@@ -56,7 +69,10 @@
 
   // Auto-submit sort dropdowns.
   document.querySelectorAll("select[data-autosubmit]").forEach(function (sel) {
-    sel.addEventListener("change", function () { sel.form.submit(); });
+    // requestSubmit fires the submit event, so the admin page check above still runs.
+    sel.addEventListener("change", function () {
+      if (sel.form.requestSubmit) sel.form.requestSubmit(); else sel.form.submit();
+    });
   });
 
   // Live picture preview on the item form.
@@ -124,11 +140,14 @@
     status.innerHTML = '<p class="muted small">Reading the page…</p>';
     fetch(endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: pageUser ? { "Content-Type": "application/json", "X-WT-As": pageUser } : { "Content-Type": "application/json" },
       body: JSON.stringify(body),
       credentials: "same-origin"
     })
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (r.status === 400 && pageUser) throw new Error("stale");
+        return r.json();
+      })
       .then(function (data) {
         importForm.classList.remove("loading");
         status.innerHTML = "";
@@ -161,10 +180,12 @@
         var title = itemForm.querySelector("input[name=title]");
         if (title) title.focus();
       })
-      .catch(function () {
+      .catch(function (err) {
         importForm.classList.remove("loading");
         status.innerHTML = "";
-        addMsg("form-error", "Couldn't reach the server. Try again.");
+        addMsg("form-error", err && err.message === "stale"
+          ? "This page was opened as someone other than the person you're acting as now. Reload the page and try again."
+          : "Couldn't reach the server. Try again.");
       });
   }
   function setField(name, value) {

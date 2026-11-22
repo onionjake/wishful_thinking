@@ -50,6 +50,40 @@ wishful_thinking reset-password sarah@example.com
 WT_DATABASE_URL=sqlite:///srv/wishful/data/wishful.db /srv/wishful/wishful_thinking reset-password sarah@example.com
 ```
 
+### Admins
+
+An admin signs in like anyone else and gets an **Admin** link in the top bar. It lists every
+account, and each account's page shows its profile, sign-ins, families, the lists it owns or
+co-manages (with their families, public links and co-managers), the invite links it made and
+the gifts it has reserved. Who reserved what on someone's own lists isn't shown there.
+Neither are their reservations on *your* lists (ones you own, or co-manage without seeing
+reservations), so being an admin never spoils your own surprises.
+
+To do something for someone, choose **Act as** on their page. Every page then works as if they
+were signed in: add, edit or remove wishes, change sharing and public links, invite people, edit
+their profile, and so on. A bar across the top says who you're acting as, and *Stop acting*
+takes you back. You see what they see, so surprises on their lists stay hidden from you too,
+with one exception: your own surprises stay hidden even when they could see them, on their
+lists, shopping list, dashboard and gift history (on the shopping list and gift history a note
+says things may be left out, without saying how many, so it gives nothing away). Gifts bought from a
+list that's since been deleted can't be checked, so they're left out too. While acting you also
+can't make yourself see a list's reservations, or remove yourself from managing it; stop acting
+and do that as yourself. Every change made
+while acting is logged with the admin's and the user's ids. Each page remembers whom it was
+shown as, so a tab left open from before you switched person can't make a change as the wrong
+one; it asks you to reload instead (this needs JavaScript; without it, changes go to whoever
+you're acting as at the time). From the admin page you can also reset someone's password (the
+new one is shown once) or sign them out everywhere.
+
+The app never makes anyone an admin. Set the flag in the database by hand:
+
+```sh
+sqlite3 /srv/wishful/data/wishful.db "UPDATE users SET is_admin = 1 WHERE email = 'you@example.com'"
+```
+
+Setting it back to `0` takes effect on the next request, including for an admin who is acting
+as someone at the time; they're back to being themselves even if the flag is later set again.
+
 ### Configuration
 
 | Variable | Default | Purpose |
@@ -211,7 +245,7 @@ src/
   config.rs           environment configuration
   db.rs               SQLite pool, models, shared queries, access control
   auth.rs             passwords, sessions, flash messages, CSRF check
-  routes/             account, lists, items (+ reservations, import API), families, pages
+  routes/             account, lists, items (+ reservations, import API), families, admin, pages
   importer/           fetch (SSRF-safe), extract (structured data), price, llm, amazon_list, orchestration
   storage.rs          blob storage over object_store (local disk now, cloud later)
   images.rs           background worker that downloads and keeps wish pictures

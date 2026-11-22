@@ -797,6 +797,12 @@ pub async fn claim_item(
             AppError::NotFound
         });
     }
+    // Nor can an admin acting as someone reserve their own surprises (the answer would tell).
+    if let Some(admin) = ctx.acting_admin() {
+        if db::claims_hidden_from(&state.db, list.id, admin.id).await? {
+            return Err(AppError::Forbidden);
+        }
+    }
     let back = format!("/lists/{}#item-{id}", list.id);
     let reveal_on = match reveal_choice(&state, &list, f.reveal_month.as_deref()).await? {
         Ok(r) => r,
@@ -865,6 +871,11 @@ pub async fn public_claim(
                     "error",
                     "You manage this list, so reservations are hidden from you.",
                 ));
+            }
+            if let Some(admin) = ctx.acting_admin() {
+                if db::claims_hidden_from(&state.db, list.id, admin.id).await? {
+                    return Err(AppError::Forbidden);
+                }
             }
             Claimer::User(user.id)
         }
@@ -1006,8 +1017,8 @@ pub async fn public_unclaim(
 /// Copy a reservation that's now bought into its buyer's gift history.
 async fn record_gift(conn: &mut sqlx::SqliteConnection, claim_id: i64) -> sqlx::Result<()> {
     sqlx::query(
-        "INSERT OR IGNORE INTO gift_history (buyer_id, claim_id, title, url, image_url, image_blob_id, price_cents, currency, store, quantity, recipient, occasion, event_date)
-         SELECT c.user_id, c.id, i.title, i.url, i.image_url, i.image_blob_id, i.price_cents, i.currency, i.store, c.quantity,
+        "INSERT OR IGNORE INTO gift_history (buyer_id, claim_id, wishlist_id, wishlist_created_at, title, url, image_url, image_blob_id, price_cents, currency, store, quantity, recipient, occasion, event_date)
+         SELECT c.user_id, c.id, w.id, w.created_at, i.title, i.url, i.image_url, i.image_blob_id, i.price_cents, i.currency, i.store, c.quantity,
                 COALESCE(w.recipient_name, u.display_name), w.title, w.event_date
            FROM claims c JOIN items i ON i.id = c.item_id JOIN wishlists w ON w.id = i.wishlist_id
            JOIN users u ON u.id = w.owner_id
@@ -1136,6 +1147,13 @@ pub async fn reservations(State(state): State<AppState>, ctx: Ctx) -> AppResult<
     let mut purchased = Vec::new();
     let mut totals: std::collections::BTreeMap<String, i64> = Default::default();
     for r in rows {
+        if let Some(admin) = ctx.acting_admin() {
+            if db::claim_is_secret_from(&state.db, r.list_id, r.reveal_on.as_deref(), admin.id)
+                .await?
+            {
+                continue;
+            }
+        }
         let Some(item) = db::get_item(&state.db, r.item_id).await? else {
             continue;
         };
@@ -1207,6 +1225,16 @@ pub async fn history(
     .bind(user.id)
     .fetch_all(&state.db)
     .await?;
+    let gifts = match ctx.acting_admin() {
+        None => gifts,
+        Some(admin) => {
+            let hide = db::gifts_secret_from(&state.db, user.id, admin.id).await?;
+            gifts
+                .into_iter()
+                .filter(|g| !hide.contains(&g.id))
+                .collect()
+        }
+    };
     let total = gifts.len();
     let q = util::non_empty(query.q.as_deref()).unwrap_or_default();
     let needle = q.to_lowercase();
