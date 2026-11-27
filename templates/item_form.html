@@ -26,7 +26,7 @@
   </section>
 
   {% if let Some(e) = error %}<p class="form-error">{{ e }}</p>{% endif %}
-  <form method="post" action="{% if let Some(id) = item_id %}/items/{{ id }}/edit{% else %}/lists/{{ list.id }}/items{% endif %}" class="card item-form" data-item-form>
+  <form method="post" action="{% if let Some(id) = item_id %}/items/{{ id }}/edit{% else %}/lists/{{ list.id }}/items{% endif %}" class="card item-form" data-item-form{% if error.is_some() || import.is_some() %} data-unsaved{% endif %}>
     <input type="hidden" name="import_source" value="{{ form.import_source }}">
     <div class="item-form-grid">
       <div class="preview">

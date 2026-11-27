@@ -182,6 +182,48 @@
       else if (url) runImport("/api/import", { url: url });
     }
   }
+  // Warn before leaving the item form with edits that haven't been saved. Links and the other
+  // forms on the page ask with confirm(), which also works where beforeunload doesn't (iOS);
+  // beforeunload covers closing or reloading the tab and the browser's back button.
+  if (itemForm) {
+    var formState = function () {
+      return [].map.call(itemForm.elements, function (el) {
+        return el.type === "radio" || el.type === "checkbox" ? el.checked : el.value;
+      }).join("\u0000");
+    };
+    var savedState = formState(), leaving = false;
+    // data-unsaved: the server sent the form back with values that aren't stored yet.
+    var unsaved = function () {
+      return !leaving && (itemForm.hasAttribute("data-unsaved") || formState() !== savedState);
+    };
+    var askLeave = function (e) {
+      if (!unsaved()) return;
+      if (confirm("You have unsaved changes. Leave without saving?")) leaving = true;
+      else e.preventDefault();
+    };
+    document.addEventListener("submit", function (e) {
+      if (e.defaultPrevented) return;
+      // Saving, or deleting the wish altogether (which has its own prompt).
+      if (e.target === itemForm || e.target.hasAttribute("data-confirm")) leaving = true;
+      else askLeave(e);
+    });
+    document.addEventListener("click", function (e) {
+      var a = e.target.closest && e.target.closest("a[href]");
+      if (!a || e.defaultPrevented || e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      if ((a.target && a.target !== "_self") || a.hasAttribute("download")) return;
+      if (a.protocol !== "http:" && a.protocol !== "https:") return;
+      if (a.hash && a.pathname === location.pathname && a.search === location.search) return;
+      askLeave(e);
+    });
+    window.addEventListener("beforeunload", function (e) {
+      if (!unsaved()) return;
+      e.preventDefault();
+      e.returnValue = "";
+    });
+    // Coming back to this page with the back button after leaving or saving.
+    window.addEventListener("pageshow", function () { leaving = false; });
+  }
+
   function runImport(endpoint, body) {
     importForm.classList.add("loading");
     status.innerHTML = '<p class="muted small">Reading the page…</p>';
